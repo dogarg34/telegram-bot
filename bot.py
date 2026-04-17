@@ -5,7 +5,6 @@ import requests
 import asyncio
 from aiogram import Bot, Dispatcher, executor, types
 
-# ================= CONFIG =================
 API_TOKEN = os.getenv("BOT_TOKEN")
 ADMIN_ID = int(os.getenv("ADMIN_ID", "0"))
 
@@ -45,39 +44,32 @@ order_id TEXT
 )
 """)
 
+# 👉 NEW TABLE FOR COUNTRIES
+cursor.execute("""
+CREATE TABLE IF NOT EXISTS countries (
+id INTEGER PRIMARY KEY,
+service TEXT,
+name TEXT
+)
+""")
+
 conn.commit()
+
+# ================= DEFAULT COUNTRIES =================
+def load_default():
+    for s in ["whatsapp", "facebook", "tiktok"]:
+        cursor.execute("SELECT * FROM countries WHERE service=?", (s,))
+        if not cursor.fetchall():
+            for c in ["USA", "UK", "UAE", "PK", "INDIA"]:
+                cursor.execute("INSERT INTO countries (service,name) VALUES (?,?)", (s, c))
+    conn.commit()
+
+load_default()
 
 # ================= STATE =================
 user_mode = {}
 user_service = {}
-
-# ================= OTP FUNCTION =================
-def get_otp(order_id):
-    try:
-        url = f"{PANEL_URL}/get_sms?id={order_id}&token={PANEL_TOKEN}"
-        res = requests.get(url, timeout=10)
-
-        if res.status_code == 200:
-            data = res.json()
-            if "sms" in data:
-                return data["sms"]
-        return None
-    except:
-        return None
-
-# ================= AUTO OTP =================
-async def auto_otp(user_id, order_id):
-    for i in range(10):
-        otp = get_otp(order_id)
-
-        if otp:
-            try:
-                await bot.send_message(user_id, f"✅ OTP:\n{otp}")
-            except:
-                pass
-            return
-
-        await asyncio.sleep(5)
+user_country = {}
 
 # ================= START =================
 @dp.message_handler(commands=['start'])
@@ -91,7 +83,6 @@ async def start(msg: types.Message):
         types.InlineKeyboardButton("📘 Facebook", callback_data="service_facebook"),
         types.InlineKeyboardButton("🎵 TikTok", callback_data="service_tiktok")
     )
-
     await msg.answer("Select Service:", reply_markup=kb)
 
 # ================= ADMIN =================
@@ -103,37 +94,50 @@ async def admin(msg: types.Message):
     kb = types.InlineKeyboardMarkup()
     kb.add(
         types.InlineKeyboardButton("➕ Add Number", callback_data="add_main"),
+        types.InlineKeyboardButton("✏️ Edit Country", callback_data="edit_country"),
         types.InlineKeyboardButton("📋 List", callback_data="list"),
-        types.InlineKeyboardButton("📊 Users", callback_data="users"),
-        types.InlineKeyboardButton("📢 Broadcast", callback_data="bc")
     )
-
     await msg.answer("👑 Admin Panel", reply_markup=kb)
 
-# ================= ADD FLOW =================
+# ================= SELECT SERVICE =================
 @dp.callback_query_handler(lambda c: c.data=="add_main")
 async def add_main(call: types.CallbackQuery):
     kb = types.InlineKeyboardMarkup()
     kb.add(
-        types.InlineKeyboardButton("WhatsApp", callback_data="add_whatsapp"),
-        types.InlineKeyboardButton("Facebook", callback_data="add_facebook"),
-        types.InlineKeyboardButton("TikTok", callback_data="add_tiktok")
+        types.InlineKeyboardButton("WhatsApp", callback_data="svc_whatsapp"),
+        types.InlineKeyboardButton("Facebook", callback_data="svc_facebook"),
+        types.InlineKeyboardButton("TikTok", callback_data="svc_tiktok")
     )
-    await call.message.answer("Select Service", reply_markup=kb)
+    await call.message.answer("Select Service:", reply_markup=kb)
 
-@dp.callback_query_handler(lambda c: c.data.startswith("add_"))
-async def select_service(call: types.CallbackQuery):
+# ================= SHOW COUNTRIES =================
+@dp.callback_query_handler(lambda c: c.data.startswith("svc_"))
+async def show_country(call: types.CallbackQuery):
     service = call.data.split("_")[1]
-    user_mode[call.from_user.id] = "add"
     user_service[call.from_user.id] = service
 
-    await call.message.answer(
-        "Send data like:\ncountry|number\n\nExample:\nPakistan|923001234567"
-    )
+    cursor.execute("SELECT name FROM countries WHERE service=?", (service,))
+    rows = cursor.fetchall()
 
-# ================= ADD HANDLER =================
+    kb = types.InlineKeyboardMarkup()
+    for r in rows:
+        kb.add(types.InlineKeyboardButton(r[0], callback_data=f"addcountry_{r[0]}"))
+
+    await call.message.answer("Select Country:", reply_markup=kb)
+
+# ================= SELECT COUNTRY =================
+@dp.callback_query_handler(lambda c: c.data.startswith("addcountry_"))
+async def select_country(call: types.CallbackQuery):
+    country = call.data.split("_")[1]
+
+    user_mode[call.from_user.id] = "add"
+    user_country[call.from_user.id] = country
+
+    await call.message.answer(f"Send numbers for {country}\n\nFormat:\n923001234567")
+
+# ================= ADD NUMBERS =================
 @dp.message_handler()
-async def handle(msg: types.Message):
+async def add_numbers(msg: types.Message):
     uid = msg.from_user.id
 
     if uid not in user_mode:
@@ -141,20 +145,33 @@ async def handle(msg: types.Message):
 
     if user_mode[uid] == "add":
         service = user_service[uid]
+        country = user_country[uid]
+
         lines = msg.text.split("\n")
 
-        for line in lines:
-            try:
-                country, number = line.split("|")
-                cursor.execute(
-                    "INSERT INTO numbers (service,country,number) VALUES (?,?,?)",
-                    (service, country, number)
-                )
-            except:
-                continue
+        for num in lines:
+            cursor.execute(
+                "INSERT INTO numbers (service,country,number) VALUES (?,?,?)",
+                (service, country, num)
+            )
 
         conn.commit()
         await msg.reply("✅ Numbers Added")
+
+# ================= EDIT COUNTRY =================
+@dp.callback_query_handler(lambda c: c.data=="edit_country")
+async def edit_country(call: types.CallbackQuery):
+    await call.message.answer("Send like:\nwhatsapp|USA|Pakistan")
+
+@dp.message_handler(lambda m: "|" in m.text)
+async def update_country(msg: types.Message):
+    try:
+        service, old, new = msg.text.split("|")
+        cursor.execute("UPDATE countries SET name=? WHERE service=? AND name=?", (new, service, old))
+        conn.commit()
+        await msg.reply("✅ Updated")
+    except:
+        pass
 
 # ================= USER FLOW =================
 @dp.callback_query_handler(lambda c: c.data.startswith("service_"))
@@ -166,12 +183,12 @@ async def choose_service(call: types.CallbackQuery):
     countries = cursor.fetchall()
 
     kb = types.InlineKeyboardMarkup()
-    for ctry in countries[:5]:
+    for ctry in countries:
         kb.add(types.InlineKeyboardButton(ctry[0], callback_data=f"country_{ctry[0]}"))
 
     await call.message.answer("Select Country:", reply_markup=kb)
 
-# ================= SHOW NUMBERS (AUTO OTP) =================
+# ================= SHOW NUMBERS =================
 @dp.callback_query_handler(lambda c: c.data.startswith("country_"))
 async def show_numbers(call: types.CallbackQuery):
     country = call.data.split("_")[1]
@@ -191,58 +208,12 @@ async def show_numbers(call: types.CallbackQuery):
     text = ""
 
     for r in rows:
-        number = r[1]
-        db_id = r[0]
-
-        text += f"⭐ +{number}\n"
-
-        cursor.execute("UPDATE numbers SET used=1 WHERE id=?", (db_id,))
-
-        order_id = str(db_id)
-
-        cursor.execute(
-            "INSERT INTO orders (user_id, number, order_id) VALUES (?,?,?)",
-            (call.from_user.id, number, order_id)
-        )
-
-        asyncio.create_task(auto_otp(call.from_user.id, order_id))
+        text += f"⭐ +{r[1]}\n"
+        cursor.execute("UPDATE numbers SET used=1 WHERE id=?", (r[0],))
 
     conn.commit()
 
     await call.message.answer(text)
-
-# ================= LIST =================
-@dp.callback_query_handler(lambda c: c.data=="list")
-async def list_data(call: types.CallbackQuery):
-    cursor.execute("SELECT service,country,number FROM numbers WHERE used=0 LIMIT 50")
-    rows = cursor.fetchall()
-
-    txt = "\n".join([f"{r[0]} | {r[1]} | {r[2]}" for r in rows]) or "Empty"
-    await call.message.answer(txt)
-
-# ================= USERS =================
-@dp.callback_query_handler(lambda c: c.data=="users")
-async def users(call: types.CallbackQuery):
-    cursor.execute("SELECT COUNT(*) FROM users")
-    await call.message.answer(f"Users: {cursor.fetchone()[0]}")
-
-# ================= BROADCAST =================
-@dp.callback_query_handler(lambda c: c.data=="bc")
-async def bc(call: types.CallbackQuery):
-    await call.message.answer("Use /broadcast msg")
-
-@dp.message_handler(commands=['broadcast'])
-async def broadcast(msg: types.Message):
-    if msg.from_user.id != ADMIN_ID:
-        return
-
-    users = cursor.execute("SELECT user_id FROM users").fetchall()
-
-    for u in users:
-        try:
-            await bot.send_message(u[0], msg.get_args())
-        except:
-            pass
 
 # ================= RUN =================
 if __name__ == "__main__":
