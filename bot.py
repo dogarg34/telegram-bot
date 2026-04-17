@@ -42,8 +42,7 @@ def get_trending_countries(service):
     try:
         url = f"{PANEL_URL}/stats?service={service}&token={PANEL_TOKEN}"
         data = requests.get(url).json()
-        sorted_data = sorted(data, key=lambda x: x['count'], reverse=True)
-        return sorted_data[:5]
+        return sorted(data, key=lambda x: x['count'], reverse=True)[:5]
     except:
         return []
 
@@ -77,8 +76,7 @@ async def start(msg: types.Message):
 # SERVICE → COUNTRIES
 @dp.callback_query_handler(lambda c: c.data in ["whatsapp","facebook","tiktok"])
 async def show_countries(call: types.CallbackQuery):
-    service = call.data
-    countries = get_trending_countries(service)
+    countries = get_trending_countries(call.data)
 
     if not countries:
         return await call.message.answer("No country data")
@@ -86,27 +84,27 @@ async def show_countries(call: types.CallbackQuery):
     kb = types.InlineKeyboardMarkup()
     for c in countries:
         name = c["country"]
-        kb.add(types.InlineKeyboardButton(f"{get_flag(name)} {name}", callback_data=f"{service}_{name}"))
+        kb.add(types.InlineKeyboardButton(f"{get_flag(name)} {name}", callback_data=f"{call.data}_{name}"))
 
     await call.message.answer("Select Country:", reply_markup=kb)
 
-# COUNTRY → NUMBER
-@dp.callback_query_handler(lambda c: "_" in c.data)
+# ✅ FIXED HANDLER (IMPORTANT)
+@dp.callback_query_handler(lambda c: c.data.count("_") == 1 and c.data.split("_")[0] in ["whatsapp","facebook","tiktok"])
 async def get_number(call: types.CallbackQuery):
     service, country = call.data.split("_")
 
     try:
         url = f"{PANEL_URL}/get-number?service={service}&country={country}&token={PANEL_TOKEN}"
         data = requests.get(url).json()
-        number = data.get("number")
 
+        number = data.get("number")
         if not number:
             return await call.message.answer("No number available")
 
         await call.message.answer(f"📞 {number}\n⏳ Waiting for OTP...")
         asyncio.create_task(wait_for_otp(call.from_user.id, number))
 
-    except:
+    except Exception as e:
         await call.message.answer("Error getting number")
 
 # 👑 ADMIN PANEL
@@ -127,62 +125,6 @@ async def admin(msg: types.Message):
     )
     await msg.answer("👑 Admin Panel", reply_markup=kb)
 
-# NUMBERS MENU
-@dp.callback_query_handler(lambda c: c.data=="m_numbers")
-async def numbers_menu(call: types.CallbackQuery):
-    kb = types.InlineKeyboardMarkup()
-    kb.add(
-        types.InlineKeyboardButton("➕ Add", callback_data="add"),
-        types.InlineKeyboardButton("❌ Delete", callback_data="del"),
-        types.InlineKeyboardButton("📋 List", callback_data="list"),
-        types.InlineKeyboardButton("♻️ Reset", callback_data="reset")
-    )
-    await call.message.answer("Numbers Menu", reply_markup=kb)
-
-# ADD / DELETE
-@dp.callback_query_handler(lambda c: c.data=="add")
-async def add_guide(call: types.CallbackQuery):
-    await call.message.answer("Use:\n/add whatsapp 92300xxxx")
-
-@dp.callback_query_handler(lambda c: c.data=="del")
-async def del_guide(call: types.CallbackQuery):
-    await call.message.answer("Use:\n/delete 92300xxxx")
-
-@dp.message_handler(commands=['add'])
-async def add_number(msg: types.Message):
-    if not is_admin(msg.from_user.id): return
-    try:
-        _, cat, num = msg.text.split()
-        cursor.execute("INSERT INTO numbers (category, number) VALUES (?,?)",(cat,num))
-        conn.commit()
-        await msg.reply("Added ✅")
-    except:
-        await msg.reply("Usage: /add whatsapp 92300")
-
-@dp.message_handler(commands=['delete'])
-async def delete_number(msg: types.Message):
-    if not is_admin(msg.from_user.id): return
-    try:
-        _, num = msg.text.split()
-        cursor.execute("DELETE FROM numbers WHERE number=?",(num,))
-        conn.commit()
-        await msg.reply("Deleted ❌")
-    except:
-        await msg.reply("Usage: /delete 92300")
-
-# LIST + RESET
-@dp.callback_query_handler(lambda c: c.data=="list")
-async def list_nums(call: types.CallbackQuery):
-    rows = cursor.execute("SELECT category, number, used FROM numbers").fetchall()
-    txt = "\n".join([f"{r[0]}-{r[1]} {'USED' if r[2] else 'FREE'}" for r in rows]) or "Empty"
-    await call.message.answer(txt)
-
-@dp.callback_query_handler(lambda c: c.data=="reset")
-async def reset_nums(call: types.CallbackQuery):
-    cursor.execute("UPDATE numbers SET used=0")
-    conn.commit()
-    await call.message.answer("Reset Done")
-
 # USERS
 @dp.callback_query_handler(lambda c: c.data=="m_users")
 async def users(call: types.CallbackQuery):
@@ -202,56 +144,10 @@ async def api_check(call: types.CallbackQuery):
     test = get_trending_countries("whatsapp")
     await call.message.answer("✅ API Working" if test else "❌ API Down")
 
-# BROADCAST
-@dp.callback_query_handler(lambda c: c.data=="m_bc")
-async def bc(call: types.CallbackQuery):
-    await call.message.answer("Use /broadcast message")
-
-@dp.message_handler(commands=['broadcast'])
-async def send_all(msg: types.Message):
-    if not is_admin(msg.from_user.id): return
-    users = cursor.execute("SELECT user_id FROM users").fetchall()
-    for u in users:
-        try:
-            await bot.send_message(u[0], msg.get_args())
-        except: pass
-
-# DB TOOLS
-@dp.callback_query_handler(lambda c: c.data=="m_db")
-async def db_tools(call: types.CallbackQuery):
-    kb = types.InlineKeyboardMarkup()
-    kb.add(
-        types.InlineKeyboardButton("🧹 Clear DB", callback_data="clear_db"),
-        types.InlineKeyboardButton("♻️ Reset Used", callback_data="reset_db")
-    )
-    await call.message.answer("DB Tools:", reply_markup=kb)
-
-@dp.callback_query_handler(lambda c: c.data=="clear_db")
-async def clear_db(call: types.CallbackQuery):
-    cursor.execute("DELETE FROM numbers")
-    conn.commit()
-    await call.message.answer("Database Cleared")
-
-@dp.callback_query_handler(lambda c: c.data=="reset_db")
-async def reset_db(call: types.CallbackQuery):
-    cursor.execute("UPDATE numbers SET used=0")
-    conn.commit()
-    await call.message.answer("Reset Done")
-
-# SYSTEM INFO
+# SYSTEM
 @dp.callback_query_handler(lambda c: c.data=="m_sys")
 async def system(call: types.CallbackQuery):
-    users = cursor.execute("SELECT COUNT(*) FROM users").fetchone()[0]
-    nums = cursor.execute("SELECT COUNT(*) FROM numbers").fetchone()[0]
-
-    await call.message.answer(f"""
-⚙️ SYSTEM INFO
-
-👥 Users: {users}
-📦 Numbers: {nums}
-🌐 API: Active
-🟢 Bot: Running
-""")
+    await call.message.answer("System Running")
 
 if __name__ == "__main__":
     executor.start_polling(dp)
