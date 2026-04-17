@@ -1,15 +1,10 @@
 import logging
 import os
 import sqlite3
-import requests
-import asyncio
 from aiogram import Bot, Dispatcher, executor, types
 
 API_TOKEN = os.getenv("BOT_TOKEN")
 ADMIN_ID = int(os.getenv("ADMIN_ID", "0"))
-
-PANEL_URL = os.getenv("PANEL_URL")
-PANEL_TOKEN = os.getenv("PANEL_TOKEN")
 
 bot = Bot(token=API_TOKEN)
 dp = Dispatcher(bot)
@@ -35,16 +30,6 @@ user_id INTEGER PRIMARY KEY
 )
 """)
 
-cursor.execute("""
-CREATE TABLE IF NOT EXISTS orders (
-id INTEGER PRIMARY KEY,
-user_id INTEGER,
-number TEXT,
-order_id TEXT
-)
-""")
-
-# 👉 NEW TABLE FOR COUNTRIES
 cursor.execute("""
 CREATE TABLE IF NOT EXISTS countries (
 id INTEGER PRIMARY KEY,
@@ -133,7 +118,7 @@ async def select_country(call: types.CallbackQuery):
     user_mode[call.from_user.id] = "add"
     user_country[call.from_user.id] = country
 
-    await call.message.answer(f"Send numbers for {country}\n\nFormat:\n923001234567")
+    await call.message.answer(f"Send numbers for {country}\n\nExample:\n923001234567")
 
 # ================= ADD NUMBERS =================
 @dp.message_handler()
@@ -188,7 +173,7 @@ async def choose_service(call: types.CallbackQuery):
 
     await call.message.answer("Select Country:", reply_markup=kb)
 
-# ================= SHOW NUMBERS =================
+# ================= SHOW NUMBERS (UPDATED UI) =================
 @dp.callback_query_handler(lambda c: c.data.startswith("country_"))
 async def show_numbers(call: types.CallbackQuery):
     country = call.data.split("_")[1]
@@ -205,15 +190,34 @@ async def show_numbers(call: types.CallbackQuery):
     if not rows:
         return await call.message.answer("❌ No numbers")
 
+    # HEADER
+    await call.message.answer(f"✅ Order Successful\n🌍 Range: {country}")
+
     text = ""
 
     for r in rows:
-        text += f"⭐ +{r[1]}\n"
+        text += f"📋 ⭐ +{r[1]}\n\n"
         cursor.execute("UPDATE numbers SET used=1 WHERE id=?", (r[0],))
 
     conn.commit()
 
-    await call.message.answer(text)
+    # BUTTONS
+    kb = types.InlineKeyboardMarkup()
+    kb.add(
+        types.InlineKeyboardButton("🔄 Change Number", callback_data=f"country_{country}"),
+        types.InlineKeyboardButton("⬅️ Back", callback_data=f"service_{service}")
+    )
+
+    await call.message.answer(text, reply_markup=kb)
+
+# ================= LIST =================
+@dp.callback_query_handler(lambda c: c.data=="list")
+async def list_data(call: types.CallbackQuery):
+    cursor.execute("SELECT service,country,number FROM numbers WHERE used=0 LIMIT 50")
+    rows = cursor.fetchall()
+
+    txt = "\n".join([f"{r[0]} | {r[1]} | {r[2]}" for r in rows]) or "Empty"
+    await call.message.answer(txt)
 
 # ================= RUN =================
 if __name__ == "__main__":
