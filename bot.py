@@ -4,11 +4,10 @@ import requests
 import os
 from aiogram import Bot, Dispatcher, executor, types
 
-API_TOKEN = os.getenv("8628390132:AAFBrX2qtiJBbuGliS73xlqmMuiFHHbGaS0")
-ADMIN_ID = int(os.getenv("6635361584"))
-
-PANEL_URL = os.getenv("http://51.77.216.195/crapi/lamix/viewstats")
-PANEL_TOKEN = os.getenv("QlFSR0dXQkU0ZlJXVpdrU3VpZIlZcGGLe5SEiIOPlolFdYpoXHZzeWQ=")
+API_TOKEN = os.getenv("BOT_TOKEN")
+ADMIN_ID = int(os.getenv("ADMIN_ID"))
+PANEL_URL = os.getenv("PANEL_URL")
+PANEL_TOKEN = os.getenv("PANEL_TOKEN")
 
 logging.basicConfig(level=logging.INFO)
 
