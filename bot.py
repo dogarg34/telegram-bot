@@ -3,6 +3,7 @@ import os
 import sqlite3
 import requests
 import asyncio
+import re
 from aiogram import Bot, Dispatcher, executor, types
 
 API_TOKEN = os.getenv("BOT_TOKEN")
@@ -45,7 +46,6 @@ order_id TEXT
 )
 """)
 
-# 👉 COUNTRY TABLE
 cursor.execute("""
 CREATE TABLE IF NOT EXISTS countries (
 id INTEGER PRIMARY KEY,
@@ -67,25 +67,37 @@ def load_default():
 
 load_default()
 
-# ================= OTP =================
-def get_otp(order_id):
+# ================= OTP NEW SYSTEM =================
+def get_all_otps():
     try:
-        url = f"{PANEL_URL}/get_sms?id={order_id}&token={PANEL_TOKEN}"
+        url = f"{PANEL_URL}/viewstats?token={PANEL_TOKEN}"
         r = requests.get(url)
         data = r.json()
-        return data.get("sms")
+        return data.get("data", [])
     except:
-        return None
+        return []
 
-async def auto_otp(user_id, order_id):
-    for i in range(12):
-        otp = get_otp(order_id)
-        if otp:
-            cursor.execute("SELECT user_id FROM orders WHERE order_id=?", (order_id,))
-            row = cursor.fetchone()
-            if row and row[0] == user_id:
-                await bot.send_message(user_id, f"✅ OTP:\n{otp}")
-            return
+def extract_code(msg):
+    m = re.search(r"\b\d{4,8}\b", msg)
+    return m.group(0) if m else msg
+
+async def auto_otp(user_id, number):
+    for i in range(20):
+        data = get_all_otps()
+
+        for item in data:
+            panel_number = str(item.get("num") or item.get("number"))
+            sms = item.get("message") or item.get("sms")
+
+            if panel_number == str(number):  # ✅ FULL MATCH
+                code = extract_code(sms)
+
+                await bot.send_message(
+                    user_id,
+                    f"📩 OTP Received\n📱 +{number}\n🔑 Code: {code}"
+                )
+                return
+
         await asyncio.sleep(5)
 
 # ================= STATE =================
@@ -183,30 +195,6 @@ async def add_numbers(msg: types.Message):
         conn.commit()
         await msg.reply("✅ Numbers Added")
 
-# ================= EDIT COUNTRY =================
-@dp.callback_query_handler(lambda c: c.data=="edit_country")
-async def edit_country(call: types.CallbackQuery):
-    await call.message.answer("Send:\nservice|old|new")
-
-@dp.message_handler(lambda m: "|" in m.text)
-async def update_country(msg: types.Message):
-    try:
-        s, old, new = msg.text.split("|")
-        cursor.execute("UPDATE countries SET name=? WHERE service=? AND name=?",(new,s,old))
-        conn.commit()
-        await msg.reply("✅ Updated")
-    except:
-        pass
-
-# ================= USED LIST =================
-@dp.callback_query_handler(lambda c: c.data=="used_list")
-async def used(call: types.CallbackQuery):
-    cursor.execute("SELECT number,country FROM numbers WHERE used=1 LIMIT 50")
-    rows = cursor.fetchall()
-
-    txt = "\n".join([f"{r[0]} ({r[1]})" for r in rows]) or "Empty"
-    await call.message.answer(txt)
-
 # ================= USER FLOW =================
 @dp.callback_query_handler(lambda c: c.data.startswith("service_"))
 async def choose(call: types.CallbackQuery):
@@ -227,7 +215,7 @@ async def choose(call: types.CallbackQuery):
 async def get_num(call: types.CallbackQuery):
     _, country, service = call.data.split("_")
 
-    cursor.execute("SELECT id,number,order_id FROM numbers WHERE service=? AND country=? AND used=0 LIMIT 3",(service,country))
+    cursor.execute("SELECT id,number FROM numbers WHERE service=? AND country=? AND used=0 LIMIT 3",(service,country))
     rows = cursor.fetchall()
 
     if not rows:
@@ -237,23 +225,17 @@ async def get_num(call: types.CallbackQuery):
 
     text=""
     for r in rows:
-        id, num, oid = r
+        id, num = r
         text += f"⭐ +{num}\n\n"
 
         cursor.execute("UPDATE numbers SET used=1 WHERE id=?",(id,))
-        cursor.execute("INSERT INTO orders (user_id,number,order_id) VALUES (?,?,?)",(call.from_user.id,num,oid))
 
-        asyncio.create_task(auto_otp(call.from_user.id, oid))
+        # ✅ NEW OTP SYSTEM CALL
+        asyncio.create_task(auto_otp(call.from_user.id, num))
 
     conn.commit()
 
-    kb = types.InlineKeyboardMarkup()
-    kb.add(
-        types.InlineKeyboardButton("🔄 Change",callback_data=f"get_{country}_{service}"),
-        types.InlineKeyboardButton("⬅️ Back",callback_data=f"service_{service}")
-    )
-
-    await call.message.answer(text,reply_markup=kb)
+    await call.message.answer(text)
 
 # ================= RUN =================
 if __name__ == "__main__":
