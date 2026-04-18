@@ -25,8 +25,7 @@ CREATE TABLE IF NOT EXISTS numbers (
 id INTEGER PRIMARY KEY,
 service TEXT,
 country TEXT,
-number TEXT,
-order_id TEXT,
+number TEXT UNIQUE,
 used INTEGER DEFAULT 0
 )
 """)
@@ -41,8 +40,7 @@ cursor.execute("""
 CREATE TABLE IF NOT EXISTS orders (
 id INTEGER PRIMARY KEY,
 user_id INTEGER,
-number TEXT,
-order_id TEXT
+number TEXT
 )
 """)
 
@@ -67,29 +65,30 @@ def load_default():
 
 load_default()
 
-# ================= OTP NEW SYSTEM =================
+# ================= OTP SYSTEM =================
 def get_all_otps():
     try:
         url = f"{PANEL_URL}/viewstats?token={PANEL_TOKEN}"
-        r = requests.get(url)
+        r = requests.get(url, timeout=10)
         data = r.json()
         return data.get("data", [])
     except:
         return []
 
 def extract_code(msg):
-    m = re.search(r"\b\d{4,8}\b", msg)
+    m = re.search(r"\b\d{4,8}\b", msg or "")
     return m.group(0) if m else msg
 
 async def auto_otp(user_id, number):
-    for i in range(20):
+    for _ in range(20):  # 20 tries
         data = get_all_otps()
 
         for item in data:
             panel_number = str(item.get("num") or item.get("number"))
             sms = item.get("message") or item.get("sms")
 
-            if panel_number == str(number):  # ✅ FULL MATCH
+            # ✅ FULL MATCH (IMPORTANT)
+            if panel_number == number:
                 code = extract_code(sms)
 
                 await bot.send_message(
@@ -99,6 +98,8 @@ async def auto_otp(user_id, number):
                 return
 
         await asyncio.sleep(5)
+
+    await bot.send_message(user_id, f"❌ OTP not received for +{number}")
 
 # ================= STATE =================
 user_service = {}
@@ -144,7 +145,6 @@ async def add_main(call: types.CallbackQuery):
     )
     await call.message.answer("Select Service:",reply_markup=kb)
 
-# ================= SERVICE → COUNTRIES =================
 @dp.callback_query_handler(lambda c: c.data.startswith("svc_"))
 async def svc(call: types.CallbackQuery):
     service = call.data.split("_")[1]
@@ -159,14 +159,13 @@ async def svc(call: types.CallbackQuery):
 
     await call.message.answer("Select Country:",reply_markup=kb)
 
-# ================= SELECT COUNTRY =================
 @dp.callback_query_handler(lambda c: c.data.startswith("countryadd_"))
 async def country_add(call: types.CallbackQuery):
     country = call.data.split("_")[1]
     user_country[call.from_user.id] = country
     user_mode[call.from_user.id] = "add"
 
-    await call.message.answer(f"Send numbers for {country}\nFormat:\nnumber|order_id")
+    await call.message.answer(f"Send numbers for {country}\n\nExample:\n923001234567")
 
 # ================= ADD NUMBERS =================
 @dp.message_handler()
@@ -182,18 +181,46 @@ async def add_numbers(msg: types.Message):
 
         lines = msg.text.split("\n")
 
-        for line in lines:
+        added = 0
+        for num in lines:
+            num = num.strip()
+            if not num:
+                continue
             try:
-                number, order_id = line.split("|")
                 cursor.execute(
-                    "INSERT INTO numbers (service,country,number,order_id) VALUES (?,?,?,?)",
-                    (service, country, number, order_id)
+                    "INSERT OR IGNORE INTO numbers (service,country,number) VALUES (?,?,?)",
+                    (service, country, num)
                 )
+                added += 1
             except:
                 continue
 
         conn.commit()
-        await msg.reply("✅ Numbers Added")
+        await msg.reply(f"✅ {added} Numbers Added")
+
+# ================= EDIT COUNTRY =================
+@dp.callback_query_handler(lambda c: c.data=="edit_country")
+async def edit_country(call: types.CallbackQuery):
+    await call.message.answer("Send:\nservice|old|new")
+
+@dp.message_handler(lambda m: "|" in m.text)
+async def update_country(msg: types.Message):
+    try:
+        s, old, new = msg.text.split("|")
+        cursor.execute("UPDATE countries SET name=? WHERE service=? AND name=?",(new,s,old))
+        conn.commit()
+        await msg.reply("✅ Updated")
+    except:
+        pass
+
+# ================= USED LIST =================
+@dp.callback_query_handler(lambda c: c.data=="used_list")
+async def used(call: types.CallbackQuery):
+    cursor.execute("SELECT number,country FROM numbers WHERE used=1 LIMIT 50")
+    rows = cursor.fetchall()
+
+    txt = "\n".join([f"{r[0]} ({r[1]})" for r in rows]) or "Empty"
+    await call.message.answer(txt)
 
 # ================= USER FLOW =================
 @dp.callback_query_handler(lambda c: c.data.startswith("service_"))
@@ -229,13 +256,20 @@ async def get_num(call: types.CallbackQuery):
         text += f"⭐ +{num}\n\n"
 
         cursor.execute("UPDATE numbers SET used=1 WHERE id=?",(id,))
+        cursor.execute("INSERT INTO orders (user_id,number) VALUES (?,?)",(call.from_user.id,num))
 
-        # ✅ NEW OTP SYSTEM CALL
+        # 🔥 AUTO OTP START
         asyncio.create_task(auto_otp(call.from_user.id, num))
 
     conn.commit()
 
-    await call.message.answer(text)
+    kb = types.InlineKeyboardMarkup()
+    kb.add(
+        types.InlineKeyboardButton("🔄 Change",callback_data=f"get_{country}_{service}"),
+        types.InlineKeyboardButton("⬅️ Back",callback_data=f"service_{service}")
+    )
+
+    await call.message.answer(text,reply_markup=kb)
 
 # ================= RUN =================
 if __name__ == "__main__":
