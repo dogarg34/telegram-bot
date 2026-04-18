@@ -194,7 +194,7 @@ async def add_numbers(msg: types.Message):
     conn.commit()
     await msg.reply(f"✅ {added} Numbers Added")
 
-# ================= EDIT COUNTRY (FIXED) =================
+# ================= EDIT COUNTRY (FULL FIXED) =================
 @dp.callback_query_handler(lambda c: c.data=="edit_country")
 async def edit_country(call: types.CallbackQuery):
     await call.message.answer("Send:\nservice|old|new")
@@ -203,11 +203,24 @@ async def edit_country(call: types.CallbackQuery):
 async def update_country(msg: types.Message):
     try:
         s, old, new = msg.text.split("|")
-        cursor.execute("UPDATE countries SET name=? WHERE service=? AND name=?",(new,s,old))
+
+        # ✅ 1. countries table update
+        cursor.execute(
+            "UPDATE countries SET name=? WHERE service=? AND name=?",
+            (new, s, old)
+        )
+
+        # 🔥 2. numbers table update (MAIN FIX)
+        cursor.execute(
+            "UPDATE numbers SET country=? WHERE service=? AND country=?",
+            (new, s, old)
+        )
+
         conn.commit()
-        await msg.reply("✅ Country Updated")
+        await msg.reply("✅ Country Fully Updated")
+
     except:
-        await msg.reply("❌ Error format")
+        await msg.reply("❌ Error format (use: service|old|new)")
 
 # ================= USED =================
 @dp.callback_query_handler(lambda c: c.data=="used_list")
