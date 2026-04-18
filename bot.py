@@ -12,7 +12,7 @@ ADMIN_ID = int(os.getenv("ADMIN_ID", "0"))
 PANEL_URL = os.getenv("PANEL_URL")
 PANEL_TOKEN = os.getenv("PANEL_TOKEN")
 
-bot = Bot(token=API_TOKEN)
+bot = Bot(token=API_TOKEN, parse_mode="HTML")
 dp = Dispatcher(bot)
 logging.basicConfig(level=logging.INFO)
 
@@ -54,7 +54,7 @@ name TEXT
 
 conn.commit()
 
-# ================= DEFAULT COUNTRIES =================
+# ================= DEFAULT =================
 def load_default():
     for s in ["whatsapp","facebook","tiktok"]:
         cursor.execute("SELECT * FROM countries WHERE service=?", (s,))
@@ -65,13 +65,12 @@ def load_default():
 
 load_default()
 
-# ================= OTP SYSTEM =================
+# ================= OTP =================
 def get_all_otps():
     try:
         url = f"{PANEL_URL}/viewstats?token={PANEL_TOKEN}"
         r = requests.get(url, timeout=10)
-        data = r.json()
-        return data.get("data", [])
+        return r.json().get("data", [])
     except:
         return []
 
@@ -80,17 +79,15 @@ def extract_code(msg):
     return m.group(0) if m else msg
 
 async def auto_otp(user_id, number):
-    for _ in range(20):  # 20 tries
+    for _ in range(20):
         data = get_all_otps()
 
         for item in data:
             panel_number = str(item.get("num") or item.get("number"))
             sms = item.get("message") or item.get("sms")
 
-            # ✅ FULL MATCH (IMPORTANT)
             if panel_number == number:
                 code = extract_code(sms)
-
                 await bot.send_message(
                     user_id,
                     f"📩 OTP Received\n📱 +{number}\n🔑 Code: {code}"
@@ -112,7 +109,7 @@ async def start(msg: types.Message):
     cursor.execute("INSERT OR IGNORE INTO users VALUES (?)",(msg.from_user.id,))
     conn.commit()
 
-    kb = types.InlineKeyboardMarkup()
+    kb = types.InlineKeyboardMarkup(row_width=3)
     kb.add(
         types.InlineKeyboardButton("📱 WhatsApp",callback_data="service_whatsapp"),
         types.InlineKeyboardButton("📘 Facebook",callback_data="service_facebook"),
@@ -126,7 +123,7 @@ async def admin(msg: types.Message):
     if msg.from_user.id != ADMIN_ID:
         return await msg.reply("Denied")
 
-    kb = types.InlineKeyboardMarkup()
+    kb = types.InlineKeyboardMarkup(row_width=3)
     kb.add(
         types.InlineKeyboardButton("➕ Add Number",callback_data="add_main"),
         types.InlineKeyboardButton("✏️ Edit Country",callback_data="edit_country"),
@@ -137,7 +134,7 @@ async def admin(msg: types.Message):
 # ================= ADD FLOW =================
 @dp.callback_query_handler(lambda c: c.data=="add_main")
 async def add_main(call: types.CallbackQuery):
-    kb = types.InlineKeyboardMarkup()
+    kb = types.InlineKeyboardMarkup(row_width=3)
     kb.add(
         types.InlineKeyboardButton("WhatsApp",callback_data="svc_whatsapp"),
         types.InlineKeyboardButton("Facebook",callback_data="svc_facebook"),
@@ -168,52 +165,51 @@ async def country_add(call: types.CallbackQuery):
     await call.message.answer(f"Send numbers for {country}\n\nExample:\n923001234567")
 
 # ================= ADD NUMBERS =================
-@dp.message_handler()
+@dp.message_handler(lambda m: m.from_user.id == ADMIN_ID and m.text and "|" not in m.text)
 async def add_numbers(msg: types.Message):
     uid = msg.from_user.id
 
     if uid not in user_mode:
         return
 
-    if user_mode[uid] == "add":
-        service = user_service[uid]
-        country = user_country[uid]
+    service = user_service[uid]
+    country = user_country[uid]
 
-        lines = msg.text.split("\n")
+    lines = msg.text.split("\n")
 
-        added = 0
-        for num in lines:
-            num = num.strip()
-            if not num:
-                continue
-            try:
-                cursor.execute(
-                    "INSERT OR IGNORE INTO numbers (service,country,number) VALUES (?,?,?)",
-                    (service, country, num)
-                )
-                added += 1
-            except:
-                continue
+    added = 0
+    for num in lines:
+        num = num.strip()
+        if not num:
+            continue
+        try:
+            cursor.execute(
+                "INSERT OR IGNORE INTO numbers (service,country,number) VALUES (?,?,?)",
+                (service, country, num)
+            )
+            added += 1
+        except:
+            continue
 
-        conn.commit()
-        await msg.reply(f"✅ {added} Numbers Added")
+    conn.commit()
+    await msg.reply(f"✅ {added} Numbers Added")
 
-# ================= EDIT COUNTRY =================
+# ================= EDIT COUNTRY (FIXED) =================
 @dp.callback_query_handler(lambda c: c.data=="edit_country")
 async def edit_country(call: types.CallbackQuery):
     await call.message.answer("Send:\nservice|old|new")
 
-@dp.message_handler(lambda m: "|" in m.text)
+@dp.message_handler(lambda m: "|" in m.text and m.from_user.id == ADMIN_ID)
 async def update_country(msg: types.Message):
     try:
         s, old, new = msg.text.split("|")
         cursor.execute("UPDATE countries SET name=? WHERE service=? AND name=?",(new,s,old))
         conn.commit()
-        await msg.reply("✅ Updated")
+        await msg.reply("✅ Country Updated")
     except:
-        pass
+        await msg.reply("❌ Error format")
 
-# ================= USED LIST =================
+# ================= USED =================
 @dp.callback_query_handler(lambda c: c.data=="used_list")
 async def used(call: types.CallbackQuery):
     cursor.execute("SELECT number,country FROM numbers WHERE used=1 LIMIT 50")
@@ -237,7 +233,7 @@ async def choose(call: types.CallbackQuery):
 
     await call.message.answer("Select Country:",reply_markup=kb)
 
-# ================= GET NUMBERS =================
+# ================= GET NUMBERS (STYLE FIXED) =================
 @dp.callback_query_handler(lambda c: c.data.startswith("get_"))
 async def get_num(call: types.CallbackQuery):
     _, country, service = call.data.split("_")
@@ -248,24 +244,27 @@ async def get_num(call: types.CallbackQuery):
     if not rows:
         return await call.message.answer("❌ No numbers")
 
-    await call.message.answer(f"✅ Order Successful\n🌍 {country}")
+    # 🔥 NEW STYLE MESSAGE
+    text = f"""✅ <b>Order Successful</b>
 
-    text=""
+🌍 Range: {country}
+
+"""
+
     for r in rows:
         id, num = r
-        text += f"⭐ +{num}\n\n"
+        text += f"📋 +{num}\n\n"
 
         cursor.execute("UPDATE numbers SET used=1 WHERE id=?",(id,))
         cursor.execute("INSERT INTO orders (user_id,number) VALUES (?,?)",(call.from_user.id,num))
 
-        # 🔥 AUTO OTP START
         asyncio.create_task(auto_otp(call.from_user.id, num))
 
     conn.commit()
 
-    kb = types.InlineKeyboardMarkup()
+    kb = types.InlineKeyboardMarkup(row_width=2)
     kb.add(
-        types.InlineKeyboardButton("🔄 Change",callback_data=f"get_{country}_{service}"),
+        types.InlineKeyboardButton("🔄 Change Number",callback_data=f"get_{country}_{service}"),
         types.InlineKeyboardButton("⬅️ Back",callback_data=f"service_{service}")
     )
 
