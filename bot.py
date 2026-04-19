@@ -165,12 +165,30 @@ async def add(call):
 @dp.message_handler(lambda m: user_state.get(m.from_user.id)=="add")
 async def add_numbers(msg):
     try:
-        s,c,n = msg.text.split("|")
-        cursor.execute("INSERT OR IGNORE INTO numbers VALUES (NULL,?,?,?,0)",(s,c,n))
+        lines = msg.text.splitlines()
+        added = 0
+
+        for num in lines:
+            num = num.strip()
+            if not num:
+                continue
+
+            # default values
+            service = "whatsapp"
+            country = "BJ"
+
+            cursor.execute(
+                "INSERT OR IGNORE INTO numbers VALUES (NULL,?,?,?,0)",
+                (service, country, num)
+            )
+            added += 1
+
         conn.commit()
-        await msg.answer("Added")
-    except:
-        await msg.answer("Format: service|country|number")
+        await msg.answer(f"✅ {added} Numbers Added")
+
+    except Exception as e:
+        await msg.answer("Error adding numbers")
+        print(e)
 
 # ================= EDIT COUNTRY =================
 @dp.callback_query_handler(lambda c: c.data=="edit")
