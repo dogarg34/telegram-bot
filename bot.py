@@ -154,17 +154,56 @@ async def admin(msg: types.Message):
     )
     await msg.answer("Admin Panel", reply_markup=kb)
 
-# ================= ADD =================
+# ================= ADD (NEW SYSTEM) =================
 user_state = {}
 
+# STEP 1 → service select
 @dp.callback_query_handler(lambda c: c.data=="add")
 async def add(call):
-    user_state[call.from_user.id] = "add"
-    await call.message.answer("Send numbers:\nservice|country|number")
+    kb = types.InlineKeyboardMarkup()
+    kb.add(
+        types.InlineKeyboardButton("📱 WhatsApp", callback_data="addservice_whatsapp"),
+        types.InlineKeyboardButton("📘 Facebook", callback_data="addservice_facebook"),
+        types.InlineKeyboardButton("🎵 TikTok", callback_data="addservice_tiktok"),
+    )
+    await call.message.answer("Select Service:", reply_markup=kb)
 
-@dp.message_handler(lambda m: user_state.get(m.from_user.id)=="add")
-async def add_numbers(msg):
+
+# STEP 2 → country select
+@dp.callback_query_handler(lambda c: c.data.startswith("addservice_"))
+async def add_service(call):
+    service = call.data.split("_")[1]
+    user_state[call.from_user.id] = {"service": service}
+
+    cursor.execute("SELECT name FROM countries WHERE service=?", (service,))
+    rows = cursor.fetchall()
+
+    kb = types.InlineKeyboardMarkup()
+    for r in rows:
+        kb.add(types.InlineKeyboardButton(r[0], callback_data=f"addcountry_{r[0]}"))
+
+    await call.message.answer("Select Country:", reply_markup=kb)
+
+
+# STEP 3 → number input
+@dp.callback_query_handler(lambda c: c.data.startswith("addcountry_"))
+async def add_country(call):
+    country = call.data.split("_")[1]
+
+    if call.from_user.id in user_state:
+        user_state[call.from_user.id]["country"] = country
+
+    await call.message.answer("📲 Send numbers only:\n(one per line)")
+
+
+# STEP 4 → save
+@dp.message_handler(lambda m: m.from_user.id in user_state and "country" in user_state[m.from_user.id])
+async def save_numbers(msg):
     try:
+        data = user_state[msg.from_user.id]
+        service = data["service"]
+        country = data["country"]
+
         lines = msg.text.splitlines()
         added = 0
 
@@ -173,10 +212,6 @@ async def add_numbers(msg):
             if not num:
                 continue
 
-            # default values
-            service = "whatsapp"
-            country = "BJ"
-
             cursor.execute(
                 "INSERT OR IGNORE INTO numbers VALUES (NULL,?,?,?,0)",
                 (service, country, num)
@@ -184,7 +219,9 @@ async def add_numbers(msg):
             added += 1
 
         conn.commit()
-        await msg.answer(f"✅ {added} Numbers Added")
+        user_state.pop(msg.from_user.id)
+
+        await msg.answer(f"✅ {added} Numbers Added\n🌍 {country}\n📱 {service}")
 
     except Exception as e:
         await msg.answer("Error adding numbers")
