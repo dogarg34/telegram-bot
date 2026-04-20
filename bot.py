@@ -243,28 +243,48 @@ async def edit_country(msg):
     except:
         await msg.answer("Error")
 
-# ================= USED =================
-@dp.callback_query_handler(lambda c: c.data=="used")
-async def used(call):
-    cursor.execute("SELECT number FROM numbers WHERE used=1 LIMIT 20")
+# ======== GET ========
+@dp.callback_query_handler(lambda c: c.data.startswith("get_"))
+async def get(call):
+    _, country, service = call.data.split("_")
+
+    cursor.execute(
+        "SELECT id, number FROM numbers WHERE service=? AND country=? AND used=0 LIMIT 3",
+        (service, country)
+    )
     rows = cursor.fetchall()
-    await call.message.answer("\n".join([r[0] for r in rows]) or "Empty")
+
+    if not rows:
+        return await call.message.answer("❌ No numbers")
+
+    await call.message.answer(f"✅ Order Successful\n🌍 Range: {country}")
+
+    text = ""
+
+    for r in rows:
+        id, num = r
+
+        active_orders[num] = call.from_user.id
+        cursor.execute("UPDATE numbers SET used=1 WHERE id=?", (id,))
+
+        text += f"📋 <code>+{num}</code>\n\n"
+
+    conn.commit()
+
+    kb = types.InlineKeyboardMarkup(row_width=1)
+    kb.add(
+        types.InlineKeyboardButton("🔄 Change Number", callback_data=f"get_{country}_{service}"),
+        types.InlineKeyboardButton("⬅️ Back", callback_data=f"service_{service}")
+    )
+
+    await call.message.answer(
+        f"📱 Your Numbers 👇\n\n{text}",
+        parse_mode="HTML",
+        reply_markup=kb
+    )
+    )
 
 # ================= USER FLOW =================
-@dp.callback_query_handler(lambda c: c.data.startswith("service_"))
-async def service(call):
-    s = call.data.split("_")[1]
-
-    cursor.execute("SELECT name FROM countries WHERE service=?", (s,))
-    rows = cursor.fetchall()
-
-    kb = types.InlineKeyboardMarkup()
-    for r in rows:
-        kb.add(types.InlineKeyboardButton(r[0],callback_data=f"get_{r[0]}_{s}"))
-
-    await call.message.answer("Select Country:", reply_markup=kb)
-
-# ================= GET =================
 @dp.callback_query_handler(lambda c: c.data.startswith("get_"))
 async def get(call):
     _, country, service = call.data.split("_")
@@ -280,7 +300,7 @@ async def get(call):
 
     await call.message.answer(f"✅ Order Successful\n🌍 Range: {country}")
 
-    kb = types.InlineKeyboardMarkup(row_width=1)
+    text = ""
 
     for r in rows:
         id, num = r
@@ -288,24 +308,25 @@ async def get(call):
         active_orders[num] = call.from_user.id
         cursor.execute("UPDATE numbers SET used=1 WHERE id=?", (id,))
 
-        # 👇 SAME LOOK (double icon like pro bot)
-        kb.add(types.InlineKeyboardButton(f"📋📱 +{num}", callback_data=f"copy_{num}"))
+        # 👇 MAIN MAGIC (copyable)
+        text += f"📋 <code>{num}</code>\n\n"
 
+    conn.commit()
+
+    # ❌ yahan buttons me number mat daalna
+    kb = types.InlineKeyboardMarkup(row_width=1)
     kb.add(
         types.InlineKeyboardButton("🔄 Change Number", callback_data=f"get_{country}_{service}"),
         types.InlineKeyboardButton("⬅️ Back", callback_data=f"service_{service}")
     )
 
-    conn.commit()
+    await call.message.answer(
+        f"📱 Your Numbers 👇\n\n{text}",
+        parse_mode="HTML",
+        reply_markup=kb
+    )
 
-    await call.message.answer("📱 Your Numbers 👇", reply_markup=kb)
-    
-@dp.callback_query_handler(lambda c: c.data.startswith("copy_"))
-async def copy_number(call):
-    num = call.data.split("_")[1]
-
-    # 👇 ye hi trick hai (top popup)
-    await call.answer("📋 Number Copied", show_alert=False)
+    # 👇 ye hi trick hai (top popup))
 
 # ================= START =================
 async def on_startup(dp):
