@@ -273,7 +273,7 @@ data = call.data.split("_")
 country = data[1]
 service = data[2]
 
-    cursor.execute(
+cursor.execute(
     "SELECT id, number FROM numbers WHERE service=? AND country=? AND used=0 LIMIT 3",
     (service, country)
 )
