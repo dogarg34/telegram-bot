@@ -271,7 +271,7 @@ async def get(call):
 
 conn.commit()
 
-    kb = types.InlineKeyboardMarkup(row_width=1)
+kb =types.InlineKeyboardMarkup(row_width=1)
     kb.add(
         types.InlineKeyboardButton("🔄 Change Number", callback_data=f"get_{country}_{service}"),
         types.InlineKeyboardButton("⬅️ Back", callback_data=f"service_{service}")
@@ -282,7 +282,6 @@ conn.commit()
         parse_mode="HTML",
         reply_markup=kb
     )
-)
 
 
 # ================= START =================
