@@ -261,25 +261,27 @@ async def get(call):
 
     text = ""
 
-    for r in rows:
-        id, num = r
+for r in rows:
+    id, num = r
 
-        active_orders[num] = call.from_user.id
-        cursor.execute("UPDATE numbers SET used=1 WHERE id=?", (id,))
+    active_orders[num] = call.from_user.id
+    cursor.execute("UPDATE numbers SET used=1 WHERE id=?", (id,))
 
-        text += f"📋 <code>{num}</code>\n\n"  # clean format
+    text += f"📋 <code>{num}</code>\n\n"
 
 conn.commit()
+
 kb = types.InlineKeyboardMarkup(row_width=1)
 kb.add(
     types.InlineKeyboardButton("🔁 Change Number", callback_data=f"get_{country}_{service}"),
     types.InlineKeyboardButton("⬅ Back", callback_data=f"service_{service}")
 )
-    await call.message.edit_text(
-        f"✅ Order Successful\n🌍 Range: {country}\n\n📱 Your Numbers 👇\n\n{text}",
-        parse_mode="HTML",
-        reply_markup=kb
-    )
+
+await call.message.edit_text(
+    f"✅ Order Successful\n🌍 Range: {country}\n\n📱 Your Numbers 👇\n\n{text}",
+    parse_mode="HTML",
+    reply_markup=kb
+)
 
 
 # ================= START =================
