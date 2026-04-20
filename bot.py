@@ -1,15 +1,8 @@
-import logging
-import os
-import sqlite3
-import asyncio
-import re
-import aiohttp
+import logging, os, sqlite3, asyncio, re, aiohttp, phonenumbers
 from aiogram import Bot, Dispatcher, executor, types
-from aiogram.types import ReplyKeyboardMarkup, KeyboardButton
 
 API_TOKEN = os.getenv("BOT_TOKEN")
 ADMIN_ID = int(os.getenv("ADMIN_ID", "0"))
-
 PANEL_URL = os.getenv("PANEL_URL")
 PANEL_TOKEN = os.getenv("PANEL_TOKEN")
 
@@ -17,285 +10,196 @@ bot = Bot(token=API_TOKEN, parse_mode="HTML")
 dp = Dispatcher(bot)
 logging.basicConfig(level=logging.INFO)
 
-# ================= GLOBAL OTP =================
+# ===== GLOBAL =====
 active_orders = {}
+flag_cache = {}
 
-def extract_code(msg):
-    m = re.search(r"\b\d{4,8}\b", msg or "")
-    return m.group(0) if m else msg
-
-async def otp_poller():
-    while True:
-        try:
-            async with aiohttp.ClientSession() as session:
-                async with session.get(f"{PANEL_URL}/viewstats?token={PANEL_TOKEN}") as r:
-                    data = await r.json()
-                    for item in data.get("data", []):
-                        num = str(item.get("num") or item.get("number"))
-                        sms = item.get("message") or item.get("sms")
-
-                        if num in active_orders:
-                            uid = active_orders[num]
-                            code = extract_code(sms)
-
-                            await bot.send_message(uid, f"📩 OTP\n📱 +{num}\n🔑 {code}")
-                            del active_orders[num]
-
-        except Exception as e:
-            print("OTP ERROR:", e)
-
-        await asyncio.sleep(2)
-
-# ================= MENU =================
-def main_menu():
-    kb = ReplyKeyboardMarkup(resize_keyboard=True)
-    kb.add(KeyboardButton("📱 Get Number"), KeyboardButton("👤 Profile"))
-    kb.add(KeyboardButton("💰 Balances"), KeyboardButton("💸 Withdraw"))
-    kb.add(KeyboardButton("❤️ Invite"), KeyboardButton("💬 Support"))
-    return kb
-
-# ================= DB =================
+# ===== DB =====
 conn = sqlite3.connect("data.db", check_same_thread=False)
 cursor = conn.cursor()
-
-cursor.execute("""CREATE TABLE IF NOT EXISTS numbers (
-id INTEGER PRIMARY KEY,
-service TEXT,
-country TEXT,
-number TEXT UNIQUE,
-used INTEGER DEFAULT 0)""")
-
-cursor.execute("""CREATE TABLE IF NOT EXISTS users (
-user_id INTEGER PRIMARY KEY)""")
-
-cursor.execute("""CREATE TABLE IF NOT EXISTS orders (
-id INTEGER PRIMARY KEY,
-user_id INTEGER,
-number TEXT)""")
-
-cursor.execute("""CREATE TABLE IF NOT EXISTS countries (
-id INTEGER PRIMARY KEY,
-service TEXT,
-name TEXT)""")
-
+cursor.execute("CREATE TABLE IF NOT EXISTS countries(service TEXT, name TEXT)")
 conn.commit()
 
-# ================= DEFAULT =================
-def load_default():
-    for s in ["whatsapp","facebook","tiktok"]:
-        cursor.execute("SELECT * FROM countries WHERE service=?", (s,))
-        if not cursor.fetchall():
-            for c in ["USA","BJ","USA2","NISHA","UK"]:
-                cursor.execute("INSERT INTO countries (service,name) VALUES (?,?)",(s,c))
-    conn.commit()
+# ===== FLAG =====
+def get_flag(num):
+    if num in flag_cache:
+        return flag_cache[num]
+    try:
+        p = phonenumbers.parse("+"+num)
+        cc = phonenumbers.region_code_for_number(p)
+        flag = ''.join(chr(ord(c)+127397) for c in cc)
+    except:
+        flag = "🌍"
+    flag_cache[num] = flag
+    return flag
 
-load_default()
+# ===== PANEL FETCH =====
+async def fetch_panel(service):
+    try:
+        url = f"{PANEL_URL}/numbers?service={service}&token={PANEL_TOKEN}"
+        async with aiohttp.ClientSession() as s:
+            async with s.get(url, timeout=10) as r:
+                data = await r.json()
+                return data.get("numbers", [])
+    except:
+        return []
 
-# ================= START =================
+# ===== COUNTRY DETECT =====
+def get_country(num):
+    try:
+        p = phonenumbers.parse("+"+num)
+        return phonenumbers.region_code_for_number(p)
+    except:
+        return "UNK"
+
+# ===== AUTO COUNTRY SYNC =====
+async def auto_country_sync():
+    while True:
+        try:
+            for service in ["whatsapp","facebook","tiktok"]:
+                nums = await fetch_panel(service)
+
+                for n in nums[:50]:
+                    c = get_country(n)
+                    cursor.execute("SELECT 1 FROM countries WHERE service=? AND name=?", (service,c))
+                    if not cursor.fetchone():
+                        cursor.execute("INSERT INTO countries VALUES(?,?)",(service,c))
+
+            conn.commit()
+            logging.info("🌍 Countries synced")
+
+        except Exception as e:
+            logging.error(e)
+
+        await asyncio.sleep(10800)
+
+# ===== KEYBOARD =====
+def number_kb(numbers, service, country):
+    kb = types.InlineKeyboardMarkup(row_width=1)
+
+    for n in numbers:
+        kb.add(types.InlineKeyboardButton(
+            text=f"📋 {get_flag(n)} +{n}",
+            callback_data=f"copy_{n}"
+        ))
+
+    kb.row(
+        types.InlineKeyboardButton("🔄 Change Number", callback_data=f"refresh_{service}_{country}"),
+        types.InlineKeyboardButton("⬅️ Back", callback_data=f"srv_{service}")
+    )
+
+    return kb
+
+# ===== START =====
 @dp.message_handler(commands=['start'])
 async def start(msg: types.Message):
-    cursor.execute("INSERT OR IGNORE INTO users VALUES (?)",(msg.from_user.id,))
-    conn.commit()
-
-    kb = types.InlineKeyboardMarkup(row_width=3)
+    kb = types.InlineKeyboardMarkup()
     kb.add(
-        types.InlineKeyboardButton("📱 WhatsApp",callback_data="service_whatsapp"),
-        types.InlineKeyboardButton("📘 Facebook",callback_data="service_facebook"),
-        types.InlineKeyboardButton("🎵 TikTok",callback_data="service_tiktok")
-    )
-
-    await msg.answer("Select Service:", reply_markup=kb)
-    await msg.answer("Main Menu 👇", reply_markup=main_menu())
-
-# ================= BUTTONS =================
-@dp.message_handler(lambda m: m.text == "📱 Get Number")
-async def btn_get(msg: types.Message):
-    kb = types.InlineKeyboardMarkup(row_width=3)
-    kb.add(
-        types.InlineKeyboardButton("📱 WhatsApp",callback_data="service_whatsapp"),
-        types.InlineKeyboardButton("📘 Facebook",callback_data="service_facebook"),
-        types.InlineKeyboardButton("🎵 TikTok",callback_data="service_tiktok")
+        types.InlineKeyboardButton("📱 WhatsApp",callback_data="srv_whatsapp"),
+        types.InlineKeyboardButton("📘 Facebook",callback_data="srv_facebook"),
+        types.InlineKeyboardButton("🎵 TikTok",callback_data="srv_tiktok")
     )
     await msg.answer("Select Service:", reply_markup=kb)
 
-@dp.message_handler(lambda m: m.text == "👤 Profile")
-async def profile(msg: types.Message):
-    await msg.answer(f"👤 ID: {msg.from_user.id}")
-
-@dp.message_handler(lambda m: m.text == "💰 Balances")
-async def balance(msg: types.Message):
-    await msg.answer("💰 Balance: 0")
-
-@dp.message_handler(lambda m: m.text == "💸 Withdraw")
-async def withdraw(msg: types.Message):
-    await msg.answer("Withdraw coming soon")
-
-@dp.message_handler(lambda m: m.text == "❤️ Invite")
-async def invite(msg: types.Message):
-    bot_info = await bot.get_me()
-    link = f"https://t.me/{bot_info.username}?start={msg.from_user.id}"
-    await msg.answer(f"🔗 {link}")
-
-@dp.message_handler(lambda m: m.text == "💬 Support")
-async def support(msg: types.Message):
-    await msg.answer("Contact admin")
-
-# ================= ADMIN =================
-@dp.message_handler(commands=['admin'])
-async def admin(msg: types.Message):
-    if msg.from_user.id != ADMIN_ID:
-        return await msg.reply("Denied")
-
-    kb = types.InlineKeyboardMarkup()
-    kb.add(
-        types.InlineKeyboardButton("➕ Add Number",callback_data="add"),
-        types.InlineKeyboardButton("✏️ Edit Country",callback_data="edit"),
-        types.InlineKeyboardButton("📂 Used",callback_data="used")
-    )
-    await msg.answer("Admin Panel", reply_markup=kb)
-
-# ================= ADD (NEW SYSTEM) =================
-user_state = {}
-
-# STEP 1 → service select
-@dp.callback_query_handler(lambda c: c.data=="add")
-async def add(call):
-    kb = types.InlineKeyboardMarkup()
-    kb.add(
-        types.InlineKeyboardButton("📱 WhatsApp", callback_data="addservice_whatsapp"),
-        types.InlineKeyboardButton("📘 Facebook", callback_data="addservice_facebook"),
-        types.InlineKeyboardButton("🎵 TikTok", callback_data="addservice_tiktok"),
-    )
-    await call.message.answer("Select Service:", reply_markup=kb)
-
-
-# STEP 2 → country select
-@dp.callback_query_handler(lambda c: c.data.startswith("addservice_"))
-async def add_service(call):
+# ===== SERVICE =====
+@dp.callback_query_handler(lambda c: c.data.startswith("srv_"))
+async def srv(call):
     service = call.data.split("_")[1]
-    user_state[call.from_user.id] = {"service": service}
 
     cursor.execute("SELECT name FROM countries WHERE service=?", (service,))
     rows = cursor.fetchall()
 
     kb = types.InlineKeyboardMarkup()
     for r in rows:
-        kb.add(types.InlineKeyboardButton(r[0], callback_data=f"addcountry_{r[0]}"))
+        kb.add(types.InlineKeyboardButton(r[0], callback_data=f"get_{service}_{r[0]}"))
 
     await call.message.answer("Select Country:", reply_markup=kb)
 
-
-# STEP 3 → number input
-@dp.callback_query_handler(lambda c: c.data.startswith("addcountry_"))
-async def add_country(call):
-    country = call.data.split("_")[1]
-
-    if call.from_user.id in user_state:
-        user_state[call.from_user.id]["country"] = country
-
-    await call.message.answer("📲 Send numbers only:\n(one per line)")
-
-
-# STEP 4 → save
-@dp.message_handler(lambda m: m.from_user.id in user_state and "country" in user_state[m.from_user.id])
-async def save_numbers(msg):
-    try:
-        data = user_state[msg.from_user.id]
-        service = data["service"]
-        country = data["country"]
-
-        lines = msg.text.splitlines()
-        added = 0
-
-        for num in lines:
-            num = num.strip()
-            if not num:
-                continue
-
-            cursor.execute(
-                "INSERT OR IGNORE INTO numbers VALUES (NULL,?,?,?,0)",
-                (service, country, num)
-            )
-            added += 1
-
-        conn.commit()
-        user_state.pop(msg.from_user.id)
-
-        await msg.answer(f"✅ {added} Numbers Added\n🌍 {country}\n📱 {service}")
-
-    except Exception as e:
-        await msg.answer("Error adding numbers")
-        print(e)
-
-# ================= EDIT COUNTRY =================
-@dp.callback_query_handler(lambda c: c.data=="edit")
-async def edit(call):
-    await call.message.answer("service|old|new")
-
-@dp.message_handler(lambda m: "|" in m.text and m.from_user.id==ADMIN_ID)
-async def edit_country(msg):
-    try:
-        s,o,n = msg.text.split("|")
-        cursor.execute("UPDATE countries SET name=? WHERE service=? AND name=?",(n,s,o))
-        cursor.execute("UPDATE numbers SET country=? WHERE service=? AND country=?",(n,s,o))
-        conn.commit()
-        await msg.answer("Updated")
-    except:
-        await msg.answer("Error")
-
-# ================= USED =================
-@dp.callback_query_handler(lambda c: c.data=="used")
-async def used(call):
-    cursor.execute("SELECT number FROM numbers WHERE used=1 LIMIT 20")
-    rows = cursor.fetchall()
-    await call.message.answer("\n".join([r[0] for r in rows]) or "Empty")
-
-# ================= USER FLOW =================
-@dp.callback_query_handler(lambda c: c.data.startswith("service_"))
-async def service(call):
-    s = call.data.split("_")[1]
-
-    cursor.execute("SELECT name FROM countries WHERE service=?", (s,))
-    rows = cursor.fetchall()
-
-    kb = types.InlineKeyboardMarkup()
-    for r in rows:
-        kb.add(types.InlineKeyboardButton(r[0],callback_data=f"get_{r[0]}_{s}"))
-
-    await call.message.answer("Select Country:", reply_markup=kb)
-
-# ================= GET =================
+# ===== GET NUMBERS =====
 @dp.callback_query_handler(lambda c: c.data.startswith("get_"))
 async def get(call):
-    _,country,service = call.data.split("_")
+    _,service,country = call.data.split("_")
 
-    cursor.execute("SELECT id,number FROM numbers WHERE service=? AND country=? AND used=0 LIMIT 3",(service,country))
-    rows = cursor.fetchall()
+    nums = await fetch_panel(service)
 
-    if not rows:
-        return await call.message.answer("No numbers")
+    filtered = [n for n in nums if get_country(n) == country]
 
-    text = f"✅ Done\n🌍 {country}\n\n"
+    if not filtered:
+        return await call.message.answer("❌ No numbers")
 
-    for r in rows:
-        id,num = r
-        text += f"+{num}\n\n"
-        cursor.execute("UPDATE numbers SET used=1 WHERE id=?",(id,))
-        active_orders[num] = call.from_user.id
+    show = []
 
-    conn.commit()
+    for n in filtered:
+        if n in active_orders:
+            continue
+        active_orders[n] = call.from_user.id
+        show.append(n)
+        if len(show) >= 5:
+            break
 
-    kb = types.InlineKeyboardMarkup()
-    kb.add(
-        types.InlineKeyboardButton("🔄 Change",callback_data=f"get_{country}_{service}"),
-        types.InlineKeyboardButton("⬅️ Back",callback_data=f"service_{service}")
+    if not show:
+        return await call.message.answer("⚠️ All numbers busy")
+
+    await call.message.answer(
+        f"✅ {service.upper()}\n🌍 {country}",
+        reply_markup=number_kb(show, service, country)
     )
 
-    await call.message.answer(text, reply_markup=kb)
+# ===== COPY =====
+@dp.callback_query_handler(lambda c: c.data.startswith("copy_"))
+async def copy_number(call):
+    num = call.data.split("_")[1]
 
-# ================= START =================
+    await call.answer("📋 Copied!")
+
+    await call.message.answer(
+        f"📋 <b>Number:</b>\n<code>+{num}</code>"
+    )
+
+# ===== REFRESH =====
+@dp.callback_query_handler(lambda c: c.data.startswith("refresh_"))
+async def refresh(call):
+    _,service,country = call.data.split("_")
+
+    await call.answer("🔄 Refreshing...")
+
+    class Fake:
+        data = f"get_{service}_{country}"
+        from_user = call.from_user
+        message = call.message
+
+    await get(Fake)
+
+# ===== OTP =====
+def extract_code(msg):
+    m = re.search(r"\d{4,8}", msg or "")
+    return m.group(0) if m else msg
+
+async def otp_poller():
+    while True:
+        try:
+            async with aiohttp.ClientSession() as s:
+                async with s.get(f"{PANEL_URL}/viewstats?token={PANEL_TOKEN}", timeout=10) as r:
+                    data = await r.json()
+
+                    for i in data.get("data", []):
+                        num = str(i.get("num") or i.get("number"))
+                        sms = i.get("message") or i.get("sms")
+
+                        if num in active_orders:
+                            uid = active_orders[num]
+                            await bot.send_message(uid, f"📩 OTP\n+{num}\n🔑 {extract_code(sms)}")
+                            del active_orders[num]
+
+        except Exception as e:
+            logging.error(e)
+
+        await asyncio.sleep(4)
+
+# ===== STARTUP =====
 async def on_startup(dp):
     asyncio.create_task(otp_poller())
+    asyncio.create_task(auto_country_sync())
 
 if __name__ == "__main__":
     executor.start_polling(dp, on_startup=on_startup)
