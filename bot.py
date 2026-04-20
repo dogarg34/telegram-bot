@@ -267,46 +267,45 @@ async def service(call):
 # ================= GET =================
 @dp.callback_query_handler(lambda c: c.data.startswith("get_"))
 async def get(call):
-    _,country,service = call.data.split("_")
+    _, country, service = call.data.split("_")
 
-    cursor.execute("SELECT id,number FROM numbers WHERE service=? AND country=? AND used=0 LIMIT 3",(service,country))
+    cursor.execute(
+        "SELECT id,number FROM numbers WHERE service=? AND country=? AND used=0 LIMIT 3",
+        (service, country)
+    )
     rows = cursor.fetchall()
 
     if not rows:
         return await call.message.answer("❌ No numbers")
 
-    # Header
     await call.message.answer(f"✅ Order Successful\n🌍 Range: {country}")
 
     kb = types.InlineKeyboardMarkup(row_width=1)
 
     for r in rows:
-        id,num = r
+        id, num = r
 
-        # save order
         active_orders[num] = call.from_user.id
-        cursor.execute("UPDATE numbers SET used=1 WHERE id=?",(id,))
+        cursor.execute("UPDATE numbers SET used=1 WHERE id=?", (id,))
 
-        # number button
-        kb.add(types.InlineKeyboardButton(f"📋 +{num}", callback_data=f"copy_{num}"))
+        # 👇 SAME LOOK (double icon like pro bot)
+        kb.add(types.InlineKeyboardButton(f"📋📱 +{num}", callback_data=f"copy_{num}"))
 
-    # extra buttons
     kb.add(
-        types.InlineKeyboardButton("🔄 Change Number",callback_data=f"get_{country}_{service}"),
-        types.InlineKeyboardButton("⬅️ Back",callback_data=f"service_{service}")
+        types.InlineKeyboardButton("🔄 Change Number", callback_data=f"get_{country}_{service}"),
+        types.InlineKeyboardButton("⬅️ Back", callback_data=f"service_{service}")
     )
 
     conn.commit()
 
     await call.message.answer("📱 Your Numbers 👇", reply_markup=kb)
-
-
-# ================= COPY HANDLER =================
+    
 @dp.callback_query_handler(lambda c: c.data.startswith("copy_"))
 async def copy_number(call):
     num = call.data.split("_")[1]
 
-    await call.answer("Number Copied ✅", show_alert=False)
+    # 👇 ye hi trick hai (top popup)
+    await call.answer("📋 Number Copied", show_alert=False)
 
 # ================= START =================
 async def on_startup(dp):
