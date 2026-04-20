@@ -246,6 +246,8 @@ async def edit_country(msg):
 # ======== GET ========
 @dp.callback_query_handler(lambda c: c.data.startswith("get_"))
 async def get(call):
+    await call.answer()  # ✅ loading fix
+
     _, country, service = call.data.split("_")
 
     cursor.execute(
@@ -267,7 +269,7 @@ async def get(call):
         active_orders[num] = call.from_user.id
         cursor.execute("UPDATE numbers SET used=1 WHERE id=?", (id,))
 
-        text += f"📋 <code>+{num}</code>\n\n"
+        text += f"📋 <code>{num}</code>\n\n"  # clean format
 
     conn.commit()
 
@@ -281,6 +283,7 @@ async def get(call):
         f"📱 Your Numbers 👇\n\n{text}",
         parse_mode="HTML",
         reply_markup=kb
+    )
     )
 
 # ================= USER FLOW =================
