@@ -284,7 +284,6 @@ async def get(call):
         parse_mode="HTML",
         reply_markup=kb
     )
-    )
 
 # ================= USER FLOW =================
 @dp.callback_query_handler(lambda c: c.data.startswith("get_"))
