@@ -242,14 +242,46 @@ async def edit_country(msg):
         await msg.answer("Updated")
     except:
         await msg.answer("Error")
+# ======== SERVICE → COUNTRY ========
+@dp.callback_query_handler(lambda c: c.data.startswith("service_"))
+async def service_handler(call):
 
+    await call.answer()
+
+    service = call.data.split("_")[1]
+
+    cursor.execute("SELECT name FROM countries WHERE service=?", (service,))
+    rows = cursor.fetchall()
+
+    if not rows:
+        return await call.message.answer("❌ No countries")
+
+    kb = types.InlineKeyboardMarkup(row_width=2)
+
+    for r in rows:
+        country = r[0]
+        kb.add(types.InlineKeyboardButton(country, callback_data=f"get_{country}_{service}"))
+
+    await call.message.edit_text(f"🌍 Select Country ({service})", reply_markup=kb)
 # ======== GET ========
 @dp.callback_query_handler(lambda c: c.data.startswith("get_"))
 async def get(call):
 
     await call.answer()
 
-    # 👇 YAHAN se tumhara code start hona chahiye
+data = call.data.split("_")
+country = data[1]
+service = data[2]
+
+    cursor.execute(
+    "SELECT id, number FROM numbers WHERE service=? AND country=? AND used=0 LIMIT 3",
+    (service, country)
+)
+rows = cursor.fetchall()
+
+if not rows:
+    return await call.message.answer("❌ No numbers")
+
     text = ""
 
     for r in rows:
@@ -272,7 +304,7 @@ async def get(call):
         f"✅ Order Successful\n🌍 Range: {country}\n\n📱 Your Numbers 👇\n\n{text}",
         parse_mode="HTML",
         reply_markup=kb
-    )
+        )
 
 
 # ================= START =================
