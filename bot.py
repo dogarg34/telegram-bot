@@ -269,18 +269,18 @@ async def get(call):
 
     await call.answer()
 
-data = call.data.split("_")
-country = data[1]
-service = data[2]
+    data = call.data.split("_")
+    country = data[1]
+    service = data[2]
 
-cursor.execute(
-    "SELECT id, number FROM numbers WHERE service=? AND country=? AND used=0 LIMIT 3",
-    (service, country)
-)
-rows = cursor.fetchall()
+    cursor.execute(
+        "SELECT id, number FROM numbers WHERE service=? AND country=? AND used=0 LIMIT 3",
+        (service, country)
+    )
+    rows = cursor.fetchall()
 
-if not rows:
-    return await call.message.answer("❌ No numbers")
+    if not rows:
+        return await call.message.answer("❌ No numbers")
 
     text = ""
 
@@ -304,7 +304,7 @@ if not rows:
         f"✅ Order Successful\n🌍 Range: {country}\n\n📱 Your Numbers 👇\n\n{text}",
         parse_mode="HTML",
         reply_markup=kb
-        )
+    )
 
 
 # ================= START =================
