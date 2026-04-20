@@ -1,2 +1,4 @@
 aiogram==2.25.1
+aiohttp
+phonenumbers
 requests==2.31.0
