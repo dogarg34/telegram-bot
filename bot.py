@@ -270,13 +270,11 @@ async def get(call):
         text += f"📋 <code>{num}</code>\n\n"  # clean format
 
 conn.commit()
-
-kb =types.InlineKeyboardMarkup(row_width=1)
-    kb.add(
-        types.InlineKeyboardButton("🔄 Change Number", callback_data=f"get_{country}_{service}"),
-        types.InlineKeyboardButton("⬅️ Back", callback_data=f"service_{service}")
-    )
-
+kb = types.InlineKeyboardMarkup(row_width=1)
+kb.add(
+    types.InlineKeyboardButton("🔁 Change Number", callback_data=f"get_{country}_{service}"),
+    types.InlineKeyboardButton("⬅ Back", callback_data=f"service_{service}")
+)
     await call.message.edit_text(
         f"✅ Order Successful\n🌍 Range: {country}\n\n📱 Your Numbers 👇\n\n{text}",
         parse_mode="HTML",
