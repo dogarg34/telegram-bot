@@ -307,7 +307,6 @@ async def copy_number(call):
     num = call.data.split("_")[1]
 
     await call.answer("Number Copied ✅", show_alert=False)
-    await call.message.answer(f"📋 Copied Number:\n+{num}")
 
 # ================= START =================
 async def on_startup(dp):
