@@ -273,25 +273,41 @@ async def get(call):
     rows = cursor.fetchall()
 
     if not rows:
-        return await call.message.answer("No numbers")
+        return await call.message.answer("❌ No numbers")
 
-    text = f"✅ Done\n🌍 {country}\n\n"
+    # Header
+    await call.message.answer(f"✅ Order Successful\n🌍 Range: {country}")
+
+    kb = types.InlineKeyboardMarkup(row_width=1)
 
     for r in rows:
         id,num = r
-        text += f"+{num}\n\n"
-        cursor.execute("UPDATE numbers SET used=1 WHERE id=?",(id,))
+
+        # save order
         active_orders[num] = call.from_user.id
+        cursor.execute("UPDATE numbers SET used=1 WHERE id=?",(id,))
 
-    conn.commit()
+        # number button
+        kb.add(types.InlineKeyboardButton(f"📋 +{num}", callback_data=f"copy_{num}"))
 
-    kb = types.InlineKeyboardMarkup()
+    # extra buttons
     kb.add(
-        types.InlineKeyboardButton("🔄 Change",callback_data=f"get_{country}_{service}"),
+        types.InlineKeyboardButton("🔄 Change Number",callback_data=f"get_{country}_{service}"),
         types.InlineKeyboardButton("⬅️ Back",callback_data=f"service_{service}")
     )
 
-    await call.message.answer(text, reply_markup=kb)
+    conn.commit()
+
+    await call.message.answer("📱 Your Numbers 👇", reply_markup=kb)
+
+
+# ================= COPY HANDLER =================
+@dp.callback_query_handler(lambda c: c.data.startswith("copy_"))
+async def copy_number(call):
+    num = call.data.split("_")[1]
+
+    await call.answer("Number Copied ✅", show_alert=False)
+    await call.message.answer(f"📋 Copied Number:\n+{num}")
 
 # ================= START =================
 async def on_startup(dp):
