@@ -7,9 +7,8 @@ import json
 from bs4 import BeautifulSoup
 from flask import Flask
 
-# ========== ENVIRONMENT VARIABLES ==========
 IVASMS_URL = os.getenv('IVASMS_URL', 'https://ivasms.com')
-COOKIES_JSON = os.getenv('COOKIES_JSON')  # JSON string of cookies
+COOKIES_JSON = os.getenv('COOKIES_JSON')
 TELEGRAM_BOT_TOKEN = os.getenv('TELEGRAM_BOT_TOKEN')
 TELEGRAM_CHAT_ID = os.getenv('TELEGRAM_CHAT_ID')
 CHECK_INTERVAL = int(os.getenv('CHECK_INTERVAL', '10'))
@@ -17,204 +16,150 @@ CHECK_INTERVAL = int(os.getenv('CHECK_INTERVAL', '10'))
 cookies_jar = {}
 sent_otps = set()
 
-# ========== COOKIES LOAD KARO ==========
 def load_cookies():
     global cookies_jar
     if not COOKIES_JSON:
-        print("❌ COOKIES_JSON environment variable is missing!")
+        print("❌ COOKIES_JSON missing")
         return False
-    
     try:
-        # Parse JSON string to dict
-        cookies_dict = json.loads(COOKIES_JSON)
-        cookies_jar = cookies_dict
-        print(f"✅ Cookies loaded successfully! Found {len(cookies_jar)} cookies")
-        print(f"📦 Cookies: {list(cookies_jar.keys())}")
+        cookies_jar = json.loads(COOKIES_JSON)
+        print(f"✅ Cookies loaded: {list(cookies_jar.keys())}")
         return True
-    except json.JSONDecodeError as e:
-        print(f"❌ Invalid JSON in COOKIES_JSON: {e}")
-        return False
-    except Exception as e:
-        print(f"❌ Error loading cookies: {e}")
+    except:
+        print("❌ Invalid JSON")
         return False
 
-# ========== CHECK COOKIES VALID ==========
 async def check_cookies_valid():
-    """Check if cookies are still valid"""
     global cookies_jar
     if not cookies_jar:
         return False
-    
     try:
-        # Try to access dashboard with cookies
-        r = requests.get(
-            f"{IVASMS_URL}/dashboard",
-            cookies=cookies_jar,
-            headers={'User-Agent': 'Mozilla/5.0'},
-            timeout=10
-        )
-        
-        # If redirected to login page, cookies expired
-        if 'login' in r.url or r.status_code == 401 or r.status_code == 403:
-            print("⚠️ Cookies expired! Need new cookies")
+        r = requests.get(f"{IVASMS_URL}/dashboard", cookies=cookies_jar, timeout=10)
+        if 'login' in r.url or r.status_code in [401,403]:
+            print("⚠️ Cookies expired")
             return False
-        
-        print("✅ Cookies are valid")
         return True
-    except Exception as e:
-        print(f"⚠️ Cookie check error: {e}")
+    except:
         return False
 
-# ========== FETCH SMS ==========
 async def fetch_sms():
     global cookies_jar
     if not cookies_jar:
         if not load_cookies():
             return []
-    
-    # URLs to try (exact URLs from your screenshots)
     urls = [
         f'{IVASMS_URL}/live-test-sms',
         f'{IVASMS_URL}/test-sms',
         f'{IVASMS_URL}/dashboard/live-sms',
-        f'{IVASMS_URL}/api/live-sms',
-        f'{IVASMS_URL}/get-live-sms',
-        f'{IVASMS_URL}/live-sms',
+        f'{IVASMS_URL}/api/live-sms'
     ]
-    
     for url in urls:
         try:
-            r = requests.get(
-                url, 
-                cookies=cookies_jar,
-                headers={
-                    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
-                    'X-Requested-With': 'XMLHttpRequest'
-                },
-                timeout=10
-            )
-            
+            r = requests.get(url, cookies=cookies_jar, timeout=10)
             if r.status_code == 200:
-                # Check if response is JSON
-                if 'application/json' in r.headers.get('Content-Type', ''):
-                    return parse_json_response(r.json())
+                if 'json' in r.headers.get('Content-Type',''):
+                    return parse_json(r.json())
                 else:
-                    return parse_html_response(r.text)
-        except Exception as e:
+                    return parse_html(r.text)
+        except:
             continue
-    
-    # If all URLs fail, cookies might be expired
-    print("⚠️ Could not fetch SMS - cookies may be expired")
     return []
 
-def parse_json_response(data):
-    """Parse JSON response for OTPs"""
+def parse_json(data):
     otps = []
-    try:
-        # Try different possible structures
-        items = data.get('data') or data.get('messages') or data.get('sms') or data.get('results') or []
-        
-        for item in items:
-            if isinstance(item, dict):
-                msg = str(item.get('message') or item.get('content') or item.get('text') or item.get('sms') or '')
-                otp = extract_otp(msg)
-                if otp:
-                    otps.append({
-                        'otp': otp,
-                        'number': item.get('number') or item.get('phone') or item.get('mobile') or 'Unknown',
-                        'service': item.get('service') or item.get('app') or item.get('application') or 'Unknown',
-                        'message': msg[:500],
-                        'time': time.strftime('%Y-%m-%d %H:%M:%S')
-                    })
-    except Exception as e:
-        print(f"JSON parse error: {e}")
-    
+    items = data.get('data') or data.get('messages') or data.get('sms') or []
+    for item in items:
+        msg = str(item.get('message') or item.get('content') or item.get('text') or '')
+        otp = extract_otp(msg)
+        if otp:
+            otps.append({
+                'otp': otp,
+                'number': item.get('number') or item.get('phone') or 'Unknown',
+                'service': item.get('service') or item.get('app') or 'Unknown',
+                'message': msg[:300],
+                'time': time.strftime('%H:%M:%S')
+            })
     return otps
 
-def parse_html_response(html):
-    """Parse HTML response for OTPs"""
+def parse_html(html):
     otps = []
     soup = BeautifulSoup(html, 'html.parser')
-    
-    # Find all tables
-    tables = soup.find_all('table')
-    for table in tables:
-        rows = table.find_all('tr')
-        for row in rows[1:]:  # Skip header
-            cols = row.find_all('td')
-            if len(cols) >= 3:
-                number = cols[0].get_text(strip=True)
-                service = cols[1].get_text(strip=True)
-                message = cols[2].get_text(strip=True)
-                
-                otp = extract_otp(message)
-                if otp:
-                    otps.append({
-                        'otp': otp,
-                        'number': number,
-                        'service': service,
-                        'message': message[:500],
-                        'time': time.strftime('%Y-%m-%d %H:%M:%S')
-                    })
-    
-    # If no table found, look for divs with sms/message class
-    if not otps:
-        sms_divs = soup.find_all('div', class_=re.compile('sms|message|otp|live', re.I))
-        for div in sms_divs:
-            text = div.get_text()
-            otp = extract_otp(text)
+    rows = soup.find_all('tr')
+    for row in rows[1:]:
+        cols = row.find_all('td')
+        if len(cols) >= 3:
+            num = cols[0].get_text(strip=True)
+            svc = cols[1].get_text(strip=True)
+            msg = cols[2].get_text(strip=True)
+            otp = extract_otp(msg)
             if otp:
-                # Try to find number and service from nearby elements
-                number = 'Unknown'
-                service = 'Unknown'
-                
-                # Look for number pattern in text
-                num_match = re.search(r'\+?\d{10,15}', text)
-                if num_match:
-                    number = num_match.group(0)
-                
                 otps.append({
                     'otp': otp,
-                    'number': number,
-                    'service': service,
-                    'message': text[:500],
-                    'time': time.strftime('%Y-%m-%d %H:%M:%S')
+                    'number': num,
+                    'service': svc,
+                    'message': msg[:300],
+                    'time': time.strftime('%H:%M:%S')
                 })
-    
     return otps
 
 def extract_otp(text):
-    """Extract OTP code from text"""
-    patterns = [
-        r'\b\d{4}\b',
-        r'\b\d{5}\b',
-        r'\b\d{6}\b',
-        r'code[:\s]*(\d{4,6})',
-        r'OTP[:\s]*(\d{4,6})',
-        r'verification[:\s]*(\d{4,6})',
-        r'kode[:\s]*(\d{4,6})',
-        r'is your verification code[:\s]*(\d{4,6})',
-        r'verification code[:\s]*(\d{4,6})',
-        r'Your.*?code[:\s]*(\d{4,6})',
-    ]
-    
-    for pattern in patterns:
-        match = re.search(pattern, text, re.IGNORECASE)
-        if match:
-            if match.group(1):
-                return match.group(1)
-            return match.group(0)
-    
+    patterns = [r'\b\d{4,6}\b', r'code[:\s]*(\d{4,6})', r'OTP[:\s]*(\d{4,6})']
+    for p in patterns:
+        m = re.search(p, text, re.I)
+        if m:
+            return m.group(1) if m.group(1) else m.group(0)
     return None
 
-# ========== TELEGRAM SEND ==========
 async def send_to_telegram(otp_data):
-    """Send OTP to Telegram"""
-    message = f"""🔐 *NEW OTP RECEIVED!*
+    # FIXED: Single line string, no triple quotes issue
+    message = f"🔐 NEW OTP RECEIVED!\n\n📱 Number: {otp_data['number']}\n🏷️ Service: {otp_data['service']}\n🔢 OTP Code: {otp_data['otp']}\n⏰ Time: {otp_data['time']}\n\n📝 Message:\n{otp_data['message']}"
+    try:
+        url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
+        payload = {'chat_id': TELEGRAM_CHAT_ID, 'text': message}
+        r = requests.post(url, json=payload, timeout=10)
+        if r.status_code == 200:
+            print(f"✅ Sent OTP: {otp_data['otp']}")
+            return True
+        return False
+    except Exception as e:
+        print(f"❌ Send error: {e}")
+        return False
 
-📱 *Number:* `{otp_data['number']}`
-🏷️ *Service:* {otp_data['service']}
-🔢 *OTP Code:* `{otp_data['otp']}`
-⏰ *Time:* {otp_data['time']}
+async def keep_alive():
+    app = Flask(__name__)
+    @app.route('/')
+    def home():
+        return "✅ Bot running", 200
+    def run():
+        app.run(host='0.0.0.0', port=int(os.getenv('PORT',8080)))
+    import threading
+    threading.Thread(target=run, daemon=True).start()
 
-📝 *Message:*
+async def main_loop():
+    print("🚀 Bot started. Monitoring OTPs...")
+    await load_cookies()
+    while True:
+        try:
+            sms_list = await fetch_sms()
+            for sms in sms_list:
+                key = f"{sms['number']}_{sms['otp']}"
+                if key not in sent_otps:
+                    if await send_to_telegram(sms):
+                        sent_otps.add(key)
+            if len(sent_otps) > 500:
+                sent_otps.clear()
+            print(f"📊 {time.strftime('%H:%M:%S')} → {len(sms_list)} OTPs found")
+        except Exception as e:
+            print(f"⚠️ Error: {e}")
+        await asyncio.sleep(CHECK_INTERVAL)
+
+async def main():
+    await asyncio.gather(main_loop(), keep_alive())
+
+if __name__ == "__main__":
+    required = ['TELEGRAM_BOT_TOKEN', 'TELEGRAM_CHAT_ID', 'COOKIES_JSON']
+    missing = [v for v in required if not os.getenv(v)]
+    if missing:
+        print(f"❌ Missing env: {missing}")
+    else:
+        asyncio.run(main())
