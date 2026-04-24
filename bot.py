@@ -1,222 +1,224 @@
+import requests
+import json
+import re
+import time
 import asyncio
 import os
-from datetime import datetime
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
-from telegram.ext import Application, CommandHandler, CallbackQueryHandler, ContextTypes, MessageHandler, filters
-from telegram.constants import ParseMode
+from bs4 import BeautifulSoup
+from telegram import Bot
+from telegram.ext import Application
 
-import config
-from iVasms import iVasmsPanel
+# ============== RAILWAY VARIABLES SE READ ==============
+IVASMS_URL = os.getenv('IVASMS_URL', 'https://ivasms.com')
+IVASMS_EMAIL = os.getenv('IVASMS_EMAIL')
+IVASMS_PASSWORD = os.getenv('IVASMS_PASSWORD')
+TELEGRAM_BOT_TOKEN = os.getenv('TELEGRAM_BOT_TOKEN')
+TELEGRAM_CHAT_ID = os.getenv('TELEGRAM_CHAT_ID')
+CHECK_INTERVAL = int(os.getenv('CHECK_INTERVAL', '10'))  # seconds
 
-# Initialize panel
-panel = iVasmsPanel(config.IVASMS_EMAIL, config.IVASMS_PASSWORD)
+# Cookies store karne ke liye
+cookies_jar = {}
+bheje_hue_otps = set()
+last_cookies_time = 0
 
-# Store user sessions
-user_sessions = {}
+# ===============================================
 
-# ✅ FIX: Variables ko function ke BAHAR define karo
-refresh_in_progress = False
-last_refresh_time = None
-
-# ============ ADMIN KEYBOARD ============
-def get_admin_keyboard():
-    keyboard = [
-        [InlineKeyboardButton("📊 Users", callback_data='admin_users')],
-        [InlineKeyboardButton("📈 Stats", callback_data='admin_stats')],
-        [InlineKeyboardButton("🔄 Refresh Ranges", callback_data='admin_refresh')],
-        [InlineKeyboardButton("🌍 Check Active Countries", callback_data='admin_check')],
-        [InlineKeyboardButton("🍪 Set Cookies", callback_data='admin_cookies')],
-        [InlineKeyboardButton("📢 Broadcast", callback_data='admin_broadcast')],
-    ]
-    return InlineKeyboardMarkup(keyboard)
-
-# ============ USER KEYBOARD ============
-def get_user_country_keyboard():
-    countries = panel.get_country_list()
-    if not countries:
-        keyboard = [[InlineKeyboardButton("🔄 No countries, ask admin to refresh", callback_data='user_refresh')]]
-    else:
-        keyboard = []
-        row = []
-        for i, country in enumerate(countries):
-            row.append(InlineKeyboardButton(f"📱 {country['name']} ({country['count']})", callback_data=f"country_{country['name']}"))
-            if len(row) == 2:
-                keyboard.append(row)
-                row = []
-        if row:
-            keyboard.append(row)
-        keyboard.append([InlineKeyboardButton("🔄 Refresh List", callback_data='user_refresh')])
-    return InlineKeyboardMarkup(keyboard)
-
-def get_user_number_keyboard(country_name, numbers):
-    keyboard = [
-        [InlineKeyboardButton("📞 Get New Number", callback_data=f"getnum_{country_name}")],
-        [InlineKeyboardButton("🔙 Back to Countries", callback_data="user_back")]
-    ]
-    return InlineKeyboardMarkup(keyboard)
-
-# ============ COMMANDS ============
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = update.effective_user.id
+async def login_to_ivasms():
+    """IVASMS panel me login karega aur cookies save karega"""
+    global cookies_jar, last_cookies_time
     
-    if user_id == config.ADMIN_ID:
-        await update.message.reply_text(
-            "🤖 *Admin Panel*\n\n"
-            "Welcome back admin!\n\n"
-            f"📊 Total numbers: {panel.get_total_numbers()}",
-            parse_mode=ParseMode.MARKDOWN,
-            reply_markup=get_admin_keyboard()
-        )
-    else:
-        await update.message.reply_text(
-            "🤖 *WhatsApp OTP Bot*\n\n"
-            "Select your country to get a number:",
-            parse_mode=ParseMode.MARKDOWN,
-            reply_markup=get_user_country_keyboard()
-        )
-
-async def admin(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = update.effective_user.id
+    print(f"🔄 Logging into IVASMS...")
     
-    if user_id != config.ADMIN_ID:
-        await update.message.reply_text("❌ Unauthorized!")
-        return
+    login_url = f"{IVASMS_URL}/login"  # Exact login URL adjust karna
     
-    await update.message.reply_text(
-        "🔧 *Admin Panel*\n\n"
-        f"📊 Numbers: {panel.get_total_numbers()}\n"
-        f"🕐 Last Refresh: {last_refresh_time if last_refresh_time else 'Never'}",
-        parse_mode=ParseMode.MARKDOWN,
-        reply_markup=get_admin_keyboard()
-    )
-
-# ============ BUTTON HANDLERS ============
-async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    global refresh_in_progress, last_refresh_time  # ✅ Now this works because variables are defined above
-    
-    query = update.callback_query
-    await query.answer()
-    
-    user_id = query.from_user.id
-    data = query.data
-    
-    # ============ ADMIN HANDLERS ============
-    if user_id == config.ADMIN_ID:
-        if data == 'admin_users':
-            await query.edit_message_text("👥 *Users*\n\nAdmin only currently.", parse_mode=ParseMode.MARKDOWN, reply_markup=get_admin_keyboard())
+    # Pehle GET request for CSRF token
+    session = requests.Session()
+    try:
+        get_response = session.get(login_url, timeout=10)
+        soup = BeautifulSoup(get_response.text, 'html.parser')
         
-        elif data == 'admin_stats':
-            countries = panel.get_country_list()
-            stats = f"📈 *Stats*\n\nNumbers: {panel.get_total_numbers()}\nCountries: {len(countries)}"
-            await query.edit_message_text(stats, parse_mode=ParseMode.MARKDOWN, reply_markup=get_admin_keyboard())
+        # CSRF token find karo
+        csrf_token = None
+        csrf_input = soup.find('input', {'name': 'csrfmiddlewaretoken'})
+        if csrf_input:
+            csrf_token = csrf_input.get('value')
         
-        elif data == 'admin_check':
-            await query.edit_message_text("🔍 Checking active countries...", parse_mode=ParseMode.MARKDOWN)
-            countries = panel.check_whatsapp_status()
-            if countries:
-                text = "✅ *Active Countries:*\n\n"
-                for name, code in countries.items():
-                    text += f"• {name} ({code})\n"
-            else:
-                text = "❌ No active countries found!"
-            await query.edit_message_text(text, parse_mode=ParseMode.MARKDOWN, reply_markup=get_admin_keyboard())
+        # Login data
+        login_data = {
+            'email': IVASMS_EMAIL,
+            'password': IVASMS_PASSWORD,
+        }
+        if csrf_token:
+            login_data['csrfmiddlewaretoken'] = csrf_token
         
-        elif data == 'admin_refresh':
-            if refresh_in_progress:
-                await query.edit_message_text("⏳ Refresh already in progress!", reply_markup=get_admin_keyboard())
-                return
-            
-            refresh_in_progress = True
-            await query.edit_message_text("🔄 Refreshing numbers...\n⏱️ Please wait 10-20 seconds...", parse_mode=ParseMode.MARKDOWN)
-            
-            try:
-                start_time = datetime.now()
-                panel.check_whatsapp_status()
-                results = panel.refresh_all_countries(100)
-                elapsed = (datetime.now() - start_time).total_seconds()
-                last_refresh_time = datetime.now().strftime("%H:%M:%S")
-                
-                success_text = f"✅ *Refresh Complete!*\n\n⏱️ Time: {elapsed:.1f}s\n📊 Total: {panel.get_total_numbers()} numbers"
-                await query.edit_message_text(success_text, parse_mode=ParseMode.MARKDOWN, reply_markup=get_admin_keyboard())
-            except Exception as e:
-                await query.edit_message_text(f"❌ Error: {str(e)}", reply_markup=get_admin_keyboard())
-            finally:
-                refresh_in_progress = False
+        # Login POST request
+        headers = {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+            'Referer': login_url,
+        }
         
-        elif data == 'admin_cookies':
-            await query.edit_message_text("🍪 *Send cookies*\n\nFormat: `key1=value1; key2=value2`", parse_mode=ParseMode.MARKDOWN)
-            context.user_data['awaiting_cookies'] = True
+        if csrf_token:
+            headers['X-CSRFToken'] = csrf_token
         
-        elif data == 'admin_broadcast':
-            await query.edit_message_text("📢 *Send broadcast message:*", parse_mode=ParseMode.MARKDOWN)
-            context.user_data['awaiting_broadcast'] = True
-    
-    # ============ USER HANDLERS ============
-    else:
-        if data == 'user_refresh':
-            await query.edit_message_text("🔄 Refreshing...", reply_markup=get_user_country_keyboard())
+        post_response = session.post(login_url, data=login_data, headers=headers, timeout=15)
         
-        elif data == 'user_back':
-            await query.edit_message_text("📱 *Select Country*", parse_mode=ParseMode.MARKDOWN, reply_markup=get_user_country_keyboard())
-        
-        elif data.startswith('country_'):
-            country_name = data.replace('country_', '')
-            user_sessions[user_id] = {'country': country_name}
-            numbers = panel.get_numbers_by_country(country_name)
-            
-            if numbers:
-                text = f"📱 *{country_name}*\n\nNumbers: {len(numbers)}\n\nClick below to get a number:"
-                await query.edit_message_text(text, parse_mode=ParseMode.MARKDOWN, reply_markup=get_user_number_keyboard(country_name, numbers))
-            else:
-                await query.edit_message_text(f"❌ No numbers for {country_name}!", reply_markup=get_user_country_keyboard())
-        
-        elif data.startswith('getnum_'):
-            country_name = data.replace('getnum_', '')
-            number = panel.claim_number(country_name)
-            
-            if number:
-                await query.edit_message_text(
-                    f"📞 *Your Number*\n\n`{number}`\n\nUse this for WhatsApp OTP.\nOTP will appear here.",
-                    parse_mode=ParseMode.MARKDOWN,
-                    reply_markup=get_user_country_keyboard()
-                )
-            else:
-                await query.edit_message_text(f"❌ No numbers left for {country_name}!", reply_markup=get_user_country_keyboard())
-
-# ============ MESSAGE HANDLERS ============
-async def handle_cookies(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if context.user_data.get('awaiting_cookies'):
-        cookies_str = update.message.text
-        success = panel.set_cookies(cookies_str)
-        if success:
-            await update.message.reply_text("✅ Cookies saved! Use /admin to refresh.")
+        # Check login success
+        if 'dashboard' in post_response.url or post_response.status_code == 200:
+            cookies_jar = session.cookies.get_dict()
+            last_cookies_time = time.time()
+            print(f"✅ IVASMS Login Successful!")
+            print(f"📦 Cookies: {list(cookies_jar.keys())}")
+            return True
         else:
-            await update.message.reply_text("❌ Invalid cookies format! Try again.")
-        context.user_data['awaiting_cookies'] = False
+            print(f"❌ Login Failed: {post_response.status_code}")
+            return False
+            
+    except Exception as e:
+        print(f"❌ Login Error: {e}")
+        return False
 
-async def handle_broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if context.user_data.get('awaiting_broadcast'):
-        await update.message.reply_text("✅ Broadcast sent!")
-        context.user_data['awaiting_broadcast'] = False
-
-async def check_otp_updates(context: ContextTypes.DEFAULT_TYPE):
-    print(f"[{datetime.now()}] Checking OTP...")
-
-# ============ MAIN ============
-def main():
-    app = Application.builder().token(config.BOT_TOKEN).build()
+async def get_live_sms():
+    """Live test SMS page se OTP fetch karega"""
+    global cookies_jar
     
-    app.add_handler(CommandHandler("start", start))
-    app.add_handler(CommandHandler("admin", admin))
-    app.add_handler(CallbackQueryHandler(button_callback))
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_cookies))
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_broadcast))
+    if not cookies_jar:
+        await login_to_ivasms()
     
-    if app.job_queue:
-        app.job_queue.run_repeating(check_otp_updates, interval=30, first=10)
+    # URLs to try (exact URL capture karna padega from network tab)
+    urls_to_try = [
+        f'{IVASMS_URL}/live-test-sms',
+        f'{IVASMS_URL}/test-sms',
+        f'{IVASMS_URL}/dashboard/live-sms',
+        f'{IVASMS_URL}/api/live-sms',
+        f'{IVASMS_URL}/get-live-sms',
+    ]
     
-    print("🚀 Bot Started!")
-    app.run_polling(allowed_updates=Update.ALL_TYPES)
+    for url in urls_to_try:
+        try:
+            response = requests.get(
+                url, 
+                cookies=cookies_jar,
+                headers={'User-Agent': 'Mozilla/5.0'},
+                timeout=10
+            )
+            
+            if response.status_code == 200:
+                # Check if JSON response
+                if 'application/json' in response.headers.get('Content-Type', ''):
+                    return parse_json_response(response.json())
+                else:
+                    return parse_html_response(response.text)
+                    
+        except Exception as e:
+            print(f"⚠️ URL failed {url}: {e}")
+            continue
+    
+    # Agar sab fail ho jaye to login refresh karo
+    await login_to_ivasms()
+    return []
 
-if __name__ == "__main__":
-    main()
+def parse_json_response(data):
+    """JSON response se OTP nikalega"""
+    otps = []
+    
+    try:
+        # Different possible response structures
+        sms_list = data.get('data', []) or data.get('messages', []) or data.get('sms', [])
+        
+        for sms in sms_list:
+            if isinstance(sms, dict):
+                number = sms.get('number', sms.get('phone', 'Unknown'))
+                service = sms.get('service', sms.get('app', 'Unknown'))
+                message = sms.get('message', sms.get('content', sms.get('text', '')))
+                
+                otp = extract_otp(message)
+                if otp:
+                    otps.append({
+                        'otp': otp,
+                        'number': number,
+                        'service': service,
+                        'message': message,
+                        'time': time.strftime('%Y-%m-%d %H:%M:%S')
+                    })
+    except Exception as e:
+        print(f"JSON parse error: {e}")
+    
+    return otps
+
+def parse_html_response(html):
+    """HTML page se OTP nikalega"""
+    otps = []
+    soup = BeautifulSoup(html, 'html.parser')
+    
+    # Find table - jaise screenshot me dikh raha hai
+    table = soup.find('table')
+    if table:
+        rows = table.find_all('tr')
+        for row in rows[1:]:  # Skip header
+            cols = row.find_all('td')
+            if len(cols) >= 3:
+                number = cols[0].get_text(strip=True)
+                service = cols[1].get_text(strip=True)
+                message = cols[2].get_text(strip=True)
+                
+                otp = extract_otp(message)
+                if otp:
+                    otps.append({
+                        'otp': otp,
+                        'number': number,
+                        'service': service,
+                        'message': message,
+                        'time': time.strftime('%Y-%m-%d %H:%M:%S')
+                    })
+    
+    # Agar table nahi mila to divs me dhundho
+    if not otps:
+        sms_divs = soup.find_all('div', class_=re.compile('sms|message|otp', re.I))
+        for div in sms_divs:
+            text = div.get_text()
+            otp = extract_otp(text)
+            if otp:
+                otps.append({
+                    'otp': otp,
+                    'number': 'Unknown',
+                    'service': 'Unknown',
+                    'message': text[:200],
+                    'time': time.strftime('%Y-%m-%d %H:%M:%S')
+                })
+    
+    return otps
+
+def extract_otp(text):
+    """Text se OTP code nikalega"""
+    patterns = [
+        r'\b\d{4}\b',
+        r'\b\d{5}\b',
+        r'\b\d{6}\b',
+        r'code[:\s]*(\d{4,6})',
+        r'OTP[:\s]*(\d{4,6})',
+        r'verification[:\s]*(\d{4,6})',
+        r'kode[:\s]*(\d{4,6})',
+        r'is your verification code[:\s]*(\d{4,6})',
+    ]
+    
+    for pattern in patterns:
+        match = re.search(pattern, text, re.IGNORECASE)
+        if match:
+            if match.group(1):
+                return match.group(1)
+            return match.group(0)
+    
+    return None
+
+async def send_to_telegram(otp_data):
+    """OTP ko Telegram par bhejega"""
+    
+    message = f"""
+🔐 **NEW OTP RECEIVED!**
+
+📱 **Number:** `{otp_data['number']}`
+🏷️ **Service:** {otp_data['service']}
+🔢 **OTP Code:** `{otp_data['otp']}`
+⏰ **Time:** {otp_data['time']}
+
+📝 **Full Message:**
