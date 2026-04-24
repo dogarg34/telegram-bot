@@ -1,143 +1,129 @@
 import requests
-import json
 import re
 import time
 import asyncio
 import os
+import json
 from bs4 import BeautifulSoup
-from telegram import Bot
-from telegram.ext import Application
+from flask import Flask
 
-# ============== RAILWAY VARIABLES SE READ ==============
+# ========== ENVIRONMENT VARIABLES ==========
 IVASMS_URL = os.getenv('IVASMS_URL', 'https://ivasms.com')
-IVASMS_EMAIL = os.getenv('IVASMS_EMAIL')
-IVASMS_PASSWORD = os.getenv('IVASMS_PASSWORD')
+COOKIES_JSON = os.getenv('COOKIES_JSON')  # JSON string of cookies
 TELEGRAM_BOT_TOKEN = os.getenv('TELEGRAM_BOT_TOKEN')
 TELEGRAM_CHAT_ID = os.getenv('TELEGRAM_CHAT_ID')
-CHECK_INTERVAL = int(os.getenv('CHECK_INTERVAL', '10'))  # seconds
+CHECK_INTERVAL = int(os.getenv('CHECK_INTERVAL', '10'))
 
-# Cookies store karne ke liye
 cookies_jar = {}
-bheje_hue_otps = set()
-last_cookies_time = 0
+sent_otps = set()
 
-# ===============================================
-
-async def login_to_ivasms():
-    """IVASMS panel me login karega aur cookies save karega"""
-    global cookies_jar, last_cookies_time
+# ========== COOKIES LOAD KARO ==========
+def load_cookies():
+    global cookies_jar
+    if not COOKIES_JSON:
+        print("❌ COOKIES_JSON environment variable is missing!")
+        return False
     
-    print(f"🔄 Logging into IVASMS...")
-    
-    login_url = f"{IVASMS_URL}/login"  # Exact login URL adjust karna
-    
-    # Pehle GET request for CSRF token
-    session = requests.Session()
     try:
-        get_response = session.get(login_url, timeout=10)
-        soup = BeautifulSoup(get_response.text, 'html.parser')
-        
-        # CSRF token find karo
-        csrf_token = None
-        csrf_input = soup.find('input', {'name': 'csrfmiddlewaretoken'})
-        if csrf_input:
-            csrf_token = csrf_input.get('value')
-        
-        # Login data
-        login_data = {
-            'email': IVASMS_EMAIL,
-            'password': IVASMS_PASSWORD,
-        }
-        if csrf_token:
-            login_data['csrfmiddlewaretoken'] = csrf_token
-        
-        # Login POST request
-        headers = {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
-            'Referer': login_url,
-        }
-        
-        if csrf_token:
-            headers['X-CSRFToken'] = csrf_token
-        
-        post_response = session.post(login_url, data=login_data, headers=headers, timeout=15)
-        
-        # Check login success
-        if 'dashboard' in post_response.url or post_response.status_code == 200:
-            cookies_jar = session.cookies.get_dict()
-            last_cookies_time = time.time()
-            print(f"✅ IVASMS Login Successful!")
-            print(f"📦 Cookies: {list(cookies_jar.keys())}")
-            return True
-        else:
-            print(f"❌ Login Failed: {post_response.status_code}")
-            return False
-            
+        # Parse JSON string to dict
+        cookies_dict = json.loads(COOKIES_JSON)
+        cookies_jar = cookies_dict
+        print(f"✅ Cookies loaded successfully! Found {len(cookies_jar)} cookies")
+        print(f"📦 Cookies: {list(cookies_jar.keys())}")
+        return True
+    except json.JSONDecodeError as e:
+        print(f"❌ Invalid JSON in COOKIES_JSON: {e}")
+        return False
     except Exception as e:
-        print(f"❌ Login Error: {e}")
+        print(f"❌ Error loading cookies: {e}")
         return False
 
-async def get_live_sms():
-    """Live test SMS page se OTP fetch karega"""
+# ========== CHECK COOKIES VALID ==========
+async def check_cookies_valid():
+    """Check if cookies are still valid"""
     global cookies_jar
-    
     if not cookies_jar:
-        await login_to_ivasms()
+        return False
     
-    # URLs to try (exact URL capture karna padega from network tab)
-    urls_to_try = [
+    try:
+        # Try to access dashboard with cookies
+        r = requests.get(
+            f"{IVASMS_URL}/dashboard",
+            cookies=cookies_jar,
+            headers={'User-Agent': 'Mozilla/5.0'},
+            timeout=10
+        )
+        
+        # If redirected to login page, cookies expired
+        if 'login' in r.url or r.status_code == 401 or r.status_code == 403:
+            print("⚠️ Cookies expired! Need new cookies")
+            return False
+        
+        print("✅ Cookies are valid")
+        return True
+    except Exception as e:
+        print(f"⚠️ Cookie check error: {e}")
+        return False
+
+# ========== FETCH SMS ==========
+async def fetch_sms():
+    global cookies_jar
+    if not cookies_jar:
+        if not load_cookies():
+            return []
+    
+    # URLs to try (exact URLs from your screenshots)
+    urls = [
         f'{IVASMS_URL}/live-test-sms',
         f'{IVASMS_URL}/test-sms',
         f'{IVASMS_URL}/dashboard/live-sms',
         f'{IVASMS_URL}/api/live-sms',
         f'{IVASMS_URL}/get-live-sms',
+        f'{IVASMS_URL}/live-sms',
     ]
     
-    for url in urls_to_try:
+    for url in urls:
         try:
-            response = requests.get(
+            r = requests.get(
                 url, 
                 cookies=cookies_jar,
-                headers={'User-Agent': 'Mozilla/5.0'},
+                headers={
+                    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+                    'X-Requested-With': 'XMLHttpRequest'
+                },
                 timeout=10
             )
             
-            if response.status_code == 200:
-                # Check if JSON response
-                if 'application/json' in response.headers.get('Content-Type', ''):
-                    return parse_json_response(response.json())
+            if r.status_code == 200:
+                # Check if response is JSON
+                if 'application/json' in r.headers.get('Content-Type', ''):
+                    return parse_json_response(r.json())
                 else:
-                    return parse_html_response(response.text)
-                    
+                    return parse_html_response(r.text)
         except Exception as e:
-            print(f"⚠️ URL failed {url}: {e}")
             continue
     
-    # Agar sab fail ho jaye to login refresh karo
-    await login_to_ivasms()
+    # If all URLs fail, cookies might be expired
+    print("⚠️ Could not fetch SMS - cookies may be expired")
     return []
 
 def parse_json_response(data):
-    """JSON response se OTP nikalega"""
+    """Parse JSON response for OTPs"""
     otps = []
-    
     try:
-        # Different possible response structures
-        sms_list = data.get('data', []) or data.get('messages', []) or data.get('sms', [])
+        # Try different possible structures
+        items = data.get('data') or data.get('messages') or data.get('sms') or data.get('results') or []
         
-        for sms in sms_list:
-            if isinstance(sms, dict):
-                number = sms.get('number', sms.get('phone', 'Unknown'))
-                service = sms.get('service', sms.get('app', 'Unknown'))
-                message = sms.get('message', sms.get('content', sms.get('text', '')))
-                
-                otp = extract_otp(message)
+        for item in items:
+            if isinstance(item, dict):
+                msg = str(item.get('message') or item.get('content') or item.get('text') or item.get('sms') or '')
+                otp = extract_otp(msg)
                 if otp:
                     otps.append({
                         'otp': otp,
-                        'number': number,
-                        'service': service,
-                        'message': message,
+                        'number': item.get('number') or item.get('phone') or item.get('mobile') or 'Unknown',
+                        'service': item.get('service') or item.get('app') or item.get('application') or 'Unknown',
+                        'message': msg[:500],
                         'time': time.strftime('%Y-%m-%d %H:%M:%S')
                     })
     except Exception as e:
@@ -146,13 +132,13 @@ def parse_json_response(data):
     return otps
 
 def parse_html_response(html):
-    """HTML page se OTP nikalega"""
+    """Parse HTML response for OTPs"""
     otps = []
     soup = BeautifulSoup(html, 'html.parser')
     
-    # Find table - jaise screenshot me dikh raha hai
-    table = soup.find('table')
-    if table:
+    # Find all tables
+    tables = soup.find_all('table')
+    for table in tables:
         rows = table.find_all('tr')
         for row in rows[1:]:  # Skip header
             cols = row.find_all('td')
@@ -167,29 +153,38 @@ def parse_html_response(html):
                         'otp': otp,
                         'number': number,
                         'service': service,
-                        'message': message,
+                        'message': message[:500],
                         'time': time.strftime('%Y-%m-%d %H:%M:%S')
                     })
     
-    # Agar table nahi mila to divs me dhundho
+    # If no table found, look for divs with sms/message class
     if not otps:
-        sms_divs = soup.find_all('div', class_=re.compile('sms|message|otp', re.I))
+        sms_divs = soup.find_all('div', class_=re.compile('sms|message|otp|live', re.I))
         for div in sms_divs:
             text = div.get_text()
             otp = extract_otp(text)
             if otp:
+                # Try to find number and service from nearby elements
+                number = 'Unknown'
+                service = 'Unknown'
+                
+                # Look for number pattern in text
+                num_match = re.search(r'\+?\d{10,15}', text)
+                if num_match:
+                    number = num_match.group(0)
+                
                 otps.append({
                     'otp': otp,
-                    'number': 'Unknown',
-                    'service': 'Unknown',
-                    'message': text[:200],
+                    'number': number,
+                    'service': service,
+                    'message': text[:500],
                     'time': time.strftime('%Y-%m-%d %H:%M:%S')
                 })
     
     return otps
 
 def extract_otp(text):
-    """Text se OTP code nikalega"""
+    """Extract OTP code from text"""
     patterns = [
         r'\b\d{4}\b',
         r'\b\d{5}\b',
@@ -199,6 +194,8 @@ def extract_otp(text):
         r'verification[:\s]*(\d{4,6})',
         r'kode[:\s]*(\d{4,6})',
         r'is your verification code[:\s]*(\d{4,6})',
+        r'verification code[:\s]*(\d{4,6})',
+        r'Your.*?code[:\s]*(\d{4,6})',
     ]
     
     for pattern in patterns:
@@ -210,15 +207,14 @@ def extract_otp(text):
     
     return None
 
+# ========== TELEGRAM SEND ==========
 async def send_to_telegram(otp_data):
-    """OTP ko Telegram par bhejega"""
-    
-    message = f"""
-🔐 **NEW OTP RECEIVED!**
+    """Send OTP to Telegram"""
+    message = f"""🔐 *NEW OTP RECEIVED!*
 
-📱 **Number:** `{otp_data['number']}`
-🏷️ **Service:** {otp_data['service']}
-🔢 **OTP Code:** `{otp_data['otp']}`
-⏰ **Time:** {otp_data['time']}
+📱 *Number:* `{otp_data['number']}`
+🏷️ *Service:* {otp_data['service']}
+🔢 *OTP Code:* `{otp_data['otp']}`
+⏰ *Time:* {otp_data['time']}
 
-📝 **Full Message:**
+📝 *Message:*
