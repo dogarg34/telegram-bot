@@ -7,7 +7,7 @@ import json
 from bs4 import BeautifulSoup
 from flask import Flask
 
-IVASMS_URL = os.getenv('IVASMS_URL', 'https://ivasms.com')
+IVASMS_URL = os.getenv('IVASMS_URL', 'https://www.ivasms.com')
 COOKIES_JSON = os.getenv('COOKIES_JSON')
 TELEGRAM_BOT_TOKEN = os.getenv('TELEGRAM_BOT_TOKEN')
 TELEGRAM_CHAT_ID = os.getenv('TELEGRAM_CHAT_ID')
@@ -15,6 +15,7 @@ CHECK_INTERVAL = int(os.getenv('CHECK_INTERVAL', '10'))
 
 cookies_jar = {}
 sent_otps = set()
+FOUND_SMS_URL = None  # Store the working URL once found
 
 def load_cookies():
     global cookies_jar
@@ -29,117 +30,355 @@ def load_cookies():
         print(f"❌ Invalid JSON: {e}")
         return False
 
-async def check_cookies_valid():
-    global cookies_jar
-    if not cookies_jar:
-        return False
+async def find_exact_sms_url():
+    """Auto-detect the correct Live SMS URL"""
+    global FOUND_SMS_URL
+    
+    # Extensive list of possible URLs to try
+    possible_paths = [
+        # Common panel paths
+        '/live-test-sms',
+        '/test-sms',
+        '/live-sms',
+        '/sms',
+        '/messages',
+        '/history',
+        '/numbers',
+        '/dashboard/live-sms',
+        '/dashboard/test-sms',
+        '/dashboard/sms',
+        '/dashboard/messages',
+        '/portal/live/test_sms',
+        '/portal/test-sms',
+        '/portal/live-sms',
+        '/portal/sms',
+        '/portal/messages',
+        '/api/live-sms',
+        '/api/test-sms',
+        '/api/sms',
+        '/api/messages',
+        '/api/get-live-sms',
+        '/api/get-sms',
+        '/get-live-sms',
+        '/get-sms',
+        # With prefixes
+        '/index.php?route=live-sms',
+        '/?page=live-sms',
+        '/?do=live-sms',
+        '/live',
+        '/test',
+        '/recent',
+        '/inbox',
+        '/sms/list',
+        '/sms/receive',
+        '/otp/list',
+        '/otp/recent',
+    ]
+    
+    print("\n🔍 Auto-searching for Live SMS URL...")
+    
+    for path in possible_paths:
+        url = f"{IVASMS_URL}{path}"
+        try:
+            r = requests.get(url, cookies=cookies_jar, timeout=10, headers={
+                'User-Agent': 'Mozilla/5.0',
+                'X-Requested-With': 'XMLHttpRequest'
+            })
+            
+            # Check if URL returns valid content (not 404, not login page)
+            content_type = r.headers.get('Content-Type', '')
+            content_length = len(r.text)
+            
+            # Skip 404 pages
+            if r.status_code == 404:
+                continue
+            
+            # Check if page contains SMS/OTP related content
+            text_lower = r.text.lower()
+            has_sms_keywords = any(keyword in text_lower for keyword in 
+                ['sms', 'otp', 'message', 'phone', 'number', '+', 'verification', 'code'])
+            
+            # Skip login pages (usually small or have login form)
+            has_login_keywords = any(keyword in text_lower for keyword in 
+                ['login', 'sign in', 'email', 'password', 'remember me'])
+            
+            if has_sms_keywords and not has_login_keywords and content_length > 500:
+                print(f"✅ Found working URL: {url}")
+                print(f"   Status: {r.status_code}, Length: {content_length}, Type: {content_type}")
+                FOUND_SMS_URL = url
+                return url
+                
+        except Exception as e:
+            continue
+    
+    # If no URL found, try to extract from dashboard
+    print("\n⚠️ No direct URL found. Checking dashboard for links...")
     try:
         r = requests.get(f"{IVASMS_URL}/dashboard", cookies=cookies_jar, timeout=10)
-        if 'login' in r.url or r.status_code in [401,403]:
-            print("⚠️ Cookies expired")
-            return False
-        return True
-    except:
-        return False
+        if r.status_code == 200:
+            soup = BeautifulSoup(r.text, 'html.parser')
+            # Find all links that might point to SMS pages
+            for link in soup.find_all('a', href=True):
+                href = link.get('href', '')
+                text = link.get_text().lower()
+                if any(keyword in href.lower() or keyword in text for keyword in 
+                       ['sms', 'otp', 'message', 'live', 'test']):
+                    full_url = href if href.startswith('http') else f"{IVASMS_URL}{href}"
+                    print(f"🔗 Found potential link: {full_url} ({text})")
+                    if full_url not in possible_paths:
+                        possible_paths.append(href)
+    except Exception as e:
+        print(f"Dashboard check error: {e}")
+    
+    print("\n❌ Could not find Live SMS URL automatically")
+    return None
 
 async def fetch_sms():
-    global cookies_jar
+    """Fetch live SMS using auto-detected or manual URLs"""
+    global cookies_jar, FOUND_SMS_URL
+    
     if not cookies_jar:
         if not load_cookies():
             return []
-    urls = [
-        f'{IVASMS_URL}/live-test-sms',
-        f'{IVASMS_URL}/test-sms',
-        f'{IVASMS_URL}/dashboard/live-sms',
-        f'{IVASMS_URL}/api/live-sms'
-    ]
-    for url in urls:
+    
+    # If we already found a working URL, use it directly
+    if FOUND_SMS_URL:
+        urls_to_try = [FOUND_SMS_URL]
+    else:
+        # Try to find the URL first
+        found_url = await find_exact_sms_url()
+        if found_url:
+            urls_to_try = [found_url]
+        else:
+            # Fallback to common URLs
+            urls_to_try = [
+                f'{IVASMS_URL}/live-test-sms',
+                f'{IVASMS_URL}/test-sms',
+                f'{IVASMS_URL}/dashboard/live-sms',
+                f'{IVASMS_URL}/api/live-sms',
+                f'{IVASMS_URL}/portal/live/test_sms',
+            ]
+    
+    for url in urls_to_try:
         try:
-            r = requests.get(url, cookies=cookies_jar, timeout=10)
+            print(f"🌐 Fetching: {url}")
+            r = requests.get(url, cookies=cookies_jar, timeout=15, headers={
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+                'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+                'Accept-Language': 'en-US,en;q=0.5',
+                'X-Requested-With': 'XMLHttpRequest'
+            })
+            
+            print(f"📡 Status: {r.status_code}, Size: {len(r.text)} bytes")
+            
             if r.status_code == 200:
-                if 'json' in r.headers.get('Content-Type',''):
-                    return parse_json(r.json())
+                if 'application/json' in r.headers.get('Content-Type', ''):
+                    result = parse_json_response(r.json())
                 else:
-                    return parse_html(r.text)
-        except:
+                    result = parse_html_response(r.text)
+                
+                if result:
+                    print(f"✅ Found {len(result)} OTP(s) from {url}")
+                    return result
+                    
+        except Exception as e:
+            print(f"❌ Error with {url}: {e}")
             continue
+    
     return []
 
-def parse_json(data):
+def parse_json_response(data):
+    """Parse JSON response for OTPs"""
     otps = []
-    items = data.get('data') or data.get('messages') or data.get('sms') or []
-    for item in items:
-        msg = str(item.get('message') or item.get('content') or item.get('text') or '')
-        otp = extract_otp(msg)
-        if otp:
-            otps.append({
-                'otp': otp,
-                'number': item.get('number') or item.get('phone') or 'Unknown',
-                'service': item.get('service') or item.get('app') or 'Unknown',
-                'message': msg[:300],
-                'time': time.strftime('%H:%M:%S')
-            })
+    try:
+        # Try different possible structures
+        if isinstance(data, dict):
+            # Check for data in various keys
+            possible_keys = ['data', 'messages', 'sms', 'results', 'items', 'list', 'records', 'otps']
+            items = []
+            for key in possible_keys:
+                if key in data:
+                    items = data[key]
+                    if items:
+                        break
+            
+            if not items and isinstance(data, dict):
+                # Maybe the whole dict is the item
+                items = [data]
+            
+            for item in items:
+                if isinstance(item, dict):
+                    msg = str(item.get('message') or item.get('content') or item.get('text') or item.get('sms') or '')
+                    otp = extract_otp(msg)
+                    if otp:
+                        otps.append({
+                            'otp': otp,
+                            'number': item.get('number') or item.get('phone') or item.get('mobile') or 'Unknown',
+                            'service': item.get('service') or item.get('app') or item.get('application') or 'Unknown',
+                            'message': msg[:500],
+                            'time': time.strftime('%Y-%m-%d %H:%M:%S')
+                        })
+    except Exception as e:
+        print(f"JSON parse error: {e}")
+    
     return otps
 
-def parse_html(html):
+def parse_html_response(html):
+    """Parse HTML response for OTPs"""
     otps = []
     soup = BeautifulSoup(html, 'html.parser')
-    rows = soup.find_all('tr')
-    for row in rows[1:]:
-        cols = row.find_all('td')
-        if len(cols) >= 3:
-            num = cols[0].get_text(strip=True)
-            svc = cols[1].get_text(strip=True)
-            msg = cols[2].get_text(strip=True)
-            otp = extract_otp(msg)
+    
+    # Method 1: Look for tables
+    tables = soup.find_all('table')
+    for table in tables:
+        rows = table.find_all('tr')
+        for row in rows[1:]:  # Skip header
+            cols = row.find_all('td')
+            if len(cols) >= 3:
+                number = cols[0].get_text(strip=True)
+                service = cols[1].get_text(strip=True)
+                message = cols[2].get_text(strip=True)
+                otp = extract_otp(message)
+                if otp:
+                    otps.append({
+                        'otp': otp,
+                        'number': number,
+                        'service': service,
+                        'message': message[:500],
+                        'time': time.strftime('%Y-%m-%d %H:%M:%S')
+                    })
+    
+    # Method 2: Look for divs with SMS/OTP class
+    if not otps:
+        sms_divs = soup.find_all('div', class_=re.compile('sms|message|otp|item|row', re.I))
+        for div in sms_divs:
+            text = div.get_text(strip=True)
+            otp = extract_otp(text)
             if otp:
+                number = re.search(r'\+?\d{8,15}', text)
+                number = number.group(0) if number else 'Unknown'
+                
+                service = re.search(r'(TikTok|Facebook|Microsoft|WhatsApp|Apple|Google|Instagram|Uber|Amazon)', text, re.I)
+                service = service.group(0) if service else 'Unknown'
+                
                 otps.append({
                     'otp': otp,
-                    'number': num,
-                    'service': svc,
-                    'message': msg[:300],
-                    'time': time.strftime('%H:%M:%S')
+                    'number': number,
+                    'service': service,
+                    'message': text[:500],
+                    'time': time.strftime('%Y-%m-%d %H:%M:%S')
                 })
+    
+    # Method 3: Generic - find any numbers that look like OTP with context
+    if not otps:
+        # Look for patterns like "Your verification code is 123456"
+        otp_pattern = r'(?:code|otp|verification).{0,20}(\d{4,6})'
+        matches = re.finditer(otp_pattern, html, re.IGNORECASE)
+        for match in matches:
+            otp = match.group(1)
+            # Get surrounding context (100 chars before and after)
+            start = max(0, match.start() - 100)
+            end = min(len(html), match.end() + 100)
+            context = html[start:end]
+            
+            number = re.search(r'\+?\d{8,15}', context)
+            number = number.group(0) if number else 'Unknown'
+            
+            service = re.search(r'(TikTok|Facebook|Microsoft|WhatsApp|Apple|Google)', context, re.I)
+            service = service.group(0) if service else 'Unknown'
+            
+            otps.append({
+                'otp': otp,
+                'number': number,
+                'service': service,
+                'message': context[:500],
+                'time': time.strftime('%Y-%m-%d %H:%M:%S')
+            })
+    
     return otps
 
 def extract_otp(text):
-    patterns = [r'\b\d{4,6}\b', r'code[:\s]*(\d{4,6})', r'OTP[:\s]*(\d{4,6})']
-    for p in patterns:
-        m = re.search(p, text, re.I)
-        if m:
-            return m.group(1) if m.group(1) else m.group(0)
+    """Extract OTP code from text"""
+    patterns = [
+        r'\b\d{4}\b',
+        r'\b\d{5}\b',
+        r'\b\d{6}\b',
+        r'code[:\s]*(\d{4,6})',
+        r'OTP[:\s]*(\d{4,6})',
+        r'verification[:\s]*(\d{4,6})',
+        r'kode[:\s]*(\d{4,6})',
+        r'is your verification code[:\s]*(\d{4,6})',
+    ]
+    
+    for pattern in patterns:
+        match = re.search(pattern, text, re.IGNORECASE)
+        if match:
+            if match.group(1):
+                return match.group(1)
+            return match.group(0)
+    
     return None
 
 async def send_to_telegram(otp_data):
-    message = f"🔐 NEW OTP RECEIVED!\n\n📱 Number: {otp_data['number']}\n🏷️ Service: {otp_data['service']}\n🔢 OTP Code: {otp_data['otp']}\n⏰ Time: {otp_data['time']}\n\n📝 Message:\n{otp_data['message']}"
+    """Send OTP to Telegram"""
+    message = f"🔐 *NEW OTP RECEIVED!*\n\n📱 *Number:* `{otp_data['number']}`\n🏷️ *Service:* {otp_data['service']}\n🔢 *OTP Code:* `{otp_data['otp']}`\n⏰ *Time:* {otp_data['time']}\n\n📝 *Message:*\n```\n{otp_data['message'][:300]}\n```"
+    
     try:
         url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
-        payload = {'chat_id': TELEGRAM_CHAT_ID, 'text': message}
+        payload = {
+            'chat_id': TELEGRAM_CHAT_ID,
+            'text': message,
+            'parse_mode': 'Markdown'
+        }
         r = requests.post(url, json=payload, timeout=10)
         if r.status_code == 200:
             print(f"✅ Sent OTP: {otp_data['otp']}")
             return True
-        return False
+        else:
+            print(f"❌ Telegram error: {r.status_code}")
+            return False
     except Exception as e:
         print(f"❌ Send error: {e}")
         return False
 
 async def keep_alive():
+    """Health check for Railway"""
     app = Flask(__name__)
+    
     @app.route('/')
-    def home():
-        return "✅ Bot running", 200
+    def health():
+        return "✅ IVASMS OTP Bot is running!", 200
+    
+    @app.route('/stats')
+    def stats():
+        return {
+            'status': 'running',
+            'unique_otps': len(sent_otps),
+            'sms_url': FOUND_SMS_URL or 'Not found yet',
+            'cookies_valid': bool(cookies_jar),
+            'last_check': time.strftime('%Y-%m-%d %H:%M:%S')
+        }
+    
     def run():
-        app.run(host='0.0.0.0', port=int(os.getenv('PORT',8080)), debug=False)
+        app.run(host='0.0.0.0', port=int(os.getenv('PORT', 8080)), debug=False)
+    
     import threading
     threading.Thread(target=run, daemon=True).start()
 
 async def main_loop():
-    print("🚀 Bot started. Monitoring OTPs...")
-    # FIXED: No await here, just call load_cookies()
+    """Main monitoring loop"""
+    print("🚀 IVASMS OTP Bot Starting...")
+    print(f"📡 Panel URL: {IVASMS_URL}")
+    print(f"⏱️ Check Interval: {CHECK_INTERVAL} seconds")
+    print("-" * 50)
+    
     if not load_cookies():
         print("❌ Failed to load cookies. Exiting.")
         return
+    
+    # Auto-find the SMS URL on startup
+    await find_exact_sms_url()
+    
     while True:
         try:
             sms_list = await fetch_sms()
@@ -148,20 +387,32 @@ async def main_loop():
                 if key not in sent_otps:
                     if await send_to_telegram(sms):
                         sent_otps.add(key)
+                        print(f"📤 New OTP sent: {sms['otp']}")
+            
             if len(sent_otps) > 500:
                 sent_otps.clear()
-            print(f"📊 {time.strftime('%H:%M:%S')} → {len(sms_list)} OTPs found")
+            
+            print(f"📊 {time.strftime('%H:%M:%S')} → {len(sms_list)} OTPs found, Total unique: {len(sent_otps)}")
+            
         except Exception as e:
-            print(f"⚠️ Error: {e}")
+            print(f"⚠️ Main loop error: {e}")
+        
         await asyncio.sleep(CHECK_INTERVAL)
 
 async def main():
     await asyncio.gather(main_loop(), keep_alive())
 
 if __name__ == "__main__":
+    print("🚀 Starting IVASMS OTP Bot with Auto URL Finder...")
+    
     required = ['TELEGRAM_BOT_TOKEN', 'TELEGRAM_CHAT_ID', 'COOKIES_JSON']
     missing = [v for v in required if not os.getenv(v)]
+    
     if missing:
-        print(f"❌ Missing env: {missing}")
+        print(f"❌ Missing environment variables: {missing}")
+        print("\n📋 Required variables:")
+        print("  - TELEGRAM_BOT_TOKEN: BotFather se lo")
+        print("  - TELEGRAM_CHAT_ID: Group/User ID")
+        print("  - COOKIES_JSON: Cookie-Editor se export karo")
     else:
         asyncio.run(main())
