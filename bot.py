@@ -25,8 +25,8 @@ def load_cookies():
         cookies_jar = json.loads(COOKIES_JSON)
         print(f"✅ Cookies loaded: {list(cookies_jar.keys())}")
         return True
-    except:
-        print("❌ Invalid JSON")
+    except Exception as e:
+        print(f"❌ Invalid JSON: {e}")
         return False
 
 async def check_cookies_valid():
@@ -111,7 +111,6 @@ def extract_otp(text):
     return None
 
 async def send_to_telegram(otp_data):
-    # FIXED: Single line string, no triple quotes issue
     message = f"🔐 NEW OTP RECEIVED!\n\n📱 Number: {otp_data['number']}\n🏷️ Service: {otp_data['service']}\n🔢 OTP Code: {otp_data['otp']}\n⏰ Time: {otp_data['time']}\n\n📝 Message:\n{otp_data['message']}"
     try:
         url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
@@ -131,13 +130,16 @@ async def keep_alive():
     def home():
         return "✅ Bot running", 200
     def run():
-        app.run(host='0.0.0.0', port=int(os.getenv('PORT',8080)))
+        app.run(host='0.0.0.0', port=int(os.getenv('PORT',8080)), debug=False)
     import threading
     threading.Thread(target=run, daemon=True).start()
 
 async def main_loop():
     print("🚀 Bot started. Monitoring OTPs...")
-    await load_cookies()
+    # FIXED: No await here, just call load_cookies()
+    if not load_cookies():
+        print("❌ Failed to load cookies. Exiting.")
+        return
     while True:
         try:
             sms_list = await fetch_sms()
