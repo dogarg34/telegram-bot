@@ -1,25 +1,15 @@
-# Bot Configuration
-BOT_TOKEN = "YOUR_BOT_TOKEN_HERE"  # BotFather se lo
-ADMIN_ID = 123456789  # Apni Telegram ID dalo (integer)
+import os
 
-# iVasms Configuration
-IVASMS_EMAIL = "your_email@gmail.com"
-IVASMS_PASSWORD = "your_password"
+BOT_TOKEN = os.environ.get('BOT_TOKEN')
+ADMIN_ID = int(os.environ.get('ADMIN_ID', 0))
+IVASMS_EMAIL = os.environ.get('IVASMS_EMAIL')
+IVASMS_PASSWORD = os.environ.get('IVASMS_PASSWORD')
+GROUP_ID = int(os.environ.get('GROUP_ID', 0))
+AUTO_REFRESH_INTERVAL = int(os.environ.get('AUTO_REFRESH', 10800))
 
-# Group/Channel ID (jahan bot add hai)
-GROUP_ID = -1001234567890  # Negative number for group
-
-# Auto refresh time (seconds)
-AUTO_REFRESH_INTERVAL = 10800  # 3 hours
-
-# Countries and their codes
 COUNTRIES = {
-    "India": "+91",
-    "USA": "+1", 
-    "UK": "+44",
     "Pakistan": "+92",
     "Bangladesh": "+880",
     "Indonesia": "+62",
-    "Brazil": "+55",
-    "Nigeria": "+234"
+    "icovey coast": "225",
 }
