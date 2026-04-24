@@ -224,51 +224,77 @@ def parse_json_response(data):
     return otps
 
 def parse_html_response(html):
-    """Parse HTML response for OTPs"""
+    """Parse HTML response for OTPs - FIXED for IVASMS table"""
     otps = []
     soup = BeautifulSoup(html, 'html.parser')
     
-    # Method 1: Look for tables
+    # METHOD 1: Find the live test SMS table
+    # Look for table that contains OTP information
     tables = soup.find_all('table')
+    
     for table in tables:
+        # Check if this is the OTP table
         rows = table.find_all('tr')
-        for row in rows[1:]:  # Skip header
-            cols = row.find_all('td')
-            if len(cols) >= 3:
-                number = cols[0].get_text(strip=True)
-                service = cols[1].get_text(strip=True)
-                message = cols[2].get_text(strip=True)
+        
+        for row in rows:
+            cells = row.find_all('td')
+            if len(cells) >= 3:
+                # First cell contains country and phone number
+                first_cell = cells[0].get_text(strip=True)
+                # Second cell contains service name (SID)
+                service = cells[1].get_text(strip=True)
+                # Third cell contains message with OTP
+                message = cells[2].get_text(strip=True)
+                
+                # Extract phone number from first cell
+                phone_match = re.search(r'(\+\d{10,15})', first_cell)
+                number = phone_match.group(1) if phone_match else first_cell
+                
+                # Extract OTP from message
                 otp = extract_otp(message)
+                
                 if otp:
                     otps.append({
                         'otp': otp,
                         'number': number,
                         'service': service,
                         'message': message[:500],
-                        'time': time.strftime('%Y-%m-%d %H:%M:%S')
+                        'time': time.strftime('%H:%M:%S')
                     })
     
-    # Method 2: Look for divs with SMS/OTP class
+    # METHOD 2: If no table found, try div-based parsing
     if not otps:
-        sms_divs = soup.find_all('div', class_=re.compile('sms|message|otp|item|row', re.I))
-        for div in sms_divs:
-            text = div.get_text(strip=True)
-            otp = extract_otp(text)
+        # Look for any content that looks like OTP messages
+        lines = html.split('\n')
+        for line in lines:
+            otp = extract_otp(line)
             if otp:
-                number = re.search(r'\+?\d{8,15}', text)
-                number = number.group(0) if number else 'Unknown'
+                # Try to find phone number in same line/context
+                phone_match = re.search(r'(\+\d{10,15})', line)
+                number = phone_match.group(1) if phone_match else 'Unknown'
                 
-                service = re.search(r'(TikTok|Facebook|Microsoft|WhatsApp|Apple|Google|Instagram|Uber|Amazon)', text, re.I)
-                service = service.group(0) if service else 'Unknown'
+                # Try to find service
+                service_match = re.search(r'(Facebook|TikTok|TINDER|SAMSUNG|Botim|YandexGo|Huawei)', line, re.I)
+                service = service_match.group(1) if service_match else 'Unknown'
                 
                 otps.append({
                     'otp': otp,
                     'number': number,
                     'service': service,
-                    'message': text[:500],
-                    'time': time.strftime('%Y-%m-%d %H:%M:%S')
+                    'message': line[:500],
+                    'time': time.strftime('%H:%M:%S')
                 })
     
+    # Remove duplicates based on OTP+number
+    unique_otps = []
+    seen = set()
+    for otp in otps:
+        key = f"{otp['otp']}_{otp['number']}"
+        if key not in seen:
+            seen.add(key)
+            unique_otps.append(otp)
+    
+    return unique_otps
     # Method 3: Generic - find any numbers that look like OTP with context
     if not otps:
         # Look for patterns like "Your verification code is 123456"
