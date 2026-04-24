@@ -1,5 +1,4 @@
 import asyncio
-import json
 import os
 from datetime import datetime
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
@@ -9,15 +8,11 @@ from telegram.constants import ParseMode
 import config
 from iVasms import iVasmsPanel
 
-# Initialize iVasms panel
 panel = iVasmsPanel(config.IVASMS_EMAIL, config.IVASMS_PASSWORD)
-
-# Store active numbers and OTPs
 active_numbers = {}
 otp_cache = {}
-auto_refresh_task = None
+refresh_in_progress = False
 
-# Admin keyboard
 def get_admin_keyboard():
     keyboard = [
         [InlineKeyboardButton("📊 Users", callback_data='users')],
@@ -32,40 +27,20 @@ def get_admin_keyboard():
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
-    
-    if user_id != config.ADMIN_ID:
-        await update.message.reply_text("❌ Unauthorized! Only admin can use this bot.")
-        return
-    
-    welcome_text = f"""
-🤖 *OTP Bot Started!*
-
-✅ Bot is active and ready.
-📱 iVasms panel connected.
-
-*Current Status:*
-• Countries: {len(config.COUNTRIES)}
-• Active Numbers: {len(active_numbers)}
-
-Use /admin to open control panel.
-    """
-    
-    await update.message.reply_text(welcome_text, parse_mode=ParseMode.MARKDOWN)
-
-async def admin(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = update.effective_user.id
-    
     if user_id != config.ADMIN_ID:
         await update.message.reply_text("❌ Unauthorized!")
         return
-    
-    await update.message.reply_text(
-        "🔧 *Admin Control Panel*\n\nSelect an option:",
-        parse_mode=ParseMode.MARKDOWN,
-        reply_markup=get_admin_keyboard()
-    )
+    await update.message.reply_text("🤖 Fast OTP Bot Started!\nUse /admin", parse_mode=ParseMode.MARKDOWN)
+
+async def admin(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    if user_id != config.ADMIN_ID:
+        await update.message.reply_text("❌ Unauthorized!")
+        return
+    await update.message.reply_text("🔧 Admin Panel (Fast Mode 🚀)", reply_markup=get_admin_keyboard())
 
 async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    global refresh_in_progress
     query = update.callback_query
     await query.answer()
     
@@ -77,75 +52,109 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     data = query.data
     
     if data == 'users':
-        await query.edit_message_text("📊 *Users*\n\nAdmin only. Total: 1 user", parse_mode=ParseMode.MARKDOWN, reply_markup=get_admin_keyboard())
+        await query.edit_message_text("📊 *Users*\n\n👤 Admin only", parse_mode=ParseMode.MARKDOWN, reply_markup=get_admin_keyboard())
+    
     elif data == 'stats':
-        stats_text = f"📈 *Statistics*\n\n• Total Numbers: {len(active_numbers)}\n• Countries: {len(config.COUNTRIES)}"
+        stats_text = f"📈 *Statistics (Fast Mode)*\n\n• Numbers: {len(active_numbers)}\n• Countries: {len(config.COUNTRIES)}\n• OTPs: {len(otp_cache)}"
         await query.edit_message_text(stats_text, parse_mode=ParseMode.MARKDOWN, reply_markup=get_admin_keyboard())
+    
     elif data == 'manual_refresh':
-        await query.edit_message_text("🔄 *Refreshing ranges...*", parse_mode=ParseMode.MARKDOWN, reply_markup=get_admin_keyboard())
+        if refresh_in_progress:
+            await query.edit_message_text("⏳ Refresh already in progress...", reply_markup=get_admin_keyboard())
+            return
+        
+        refresh_in_progress = True
+        status_msg = await query.edit_message_text("🔄 *Refreshing ranges (Fast Mode)*...\n⏱️ Should take 5-10 seconds", parse_mode=ParseMode.MARKDOWN)
+        
+        try:
+            # Fast parallel refresh
+            start_time = datetime.now()
+            
+            # Step 1: Refresh range
+            panel.refresh_range_fast()
+            
+            # Step 2: Parallel fetch all countries
+            results = panel.get_all_countries_numbers_parallel(config.COUNTRIES, 100)
+            
+            # Step 3: Update active numbers
+            active_numbers.clear()
+            total = 0
+            for country_name, numbers in results.items():
+                for num in numbers:
+                    num_id = str(num.get('id', total))
+                    active_numbers[num_id] = {
+                        'number': num.get('number'),
+                        'country': country_name,
+                        'added_at': datetime.now().isoformat()
+                    }
+                    total += 1
+            
+            elapsed = (datetime.now() - start_time).total_seconds()
+            
+            await status_msg.edit_text(
+                f"✅ *Refresh Complete!*\n\n"
+                f"• Numbers added: {total}\n"
+                f"• Time taken: {elapsed:.1f} seconds\n"
+                f"• Countries: {len(config.COUNTRIES)}",
+                parse_mode=ParseMode.MARKDOWN,
+                reply_markup=get_admin_keyboard()
+            )
+        except Exception as e:
+            await status_msg.edit_text(f"❌ Error: {str(e)}", reply_markup=get_admin_keyboard())
+        finally:
+            refresh_in_progress = False
+    
     elif data == 'add_numbers':
-        await query.edit_message_text("🌍 *Adding numbers...*", parse_mode=ParseMode.MARKDOWN, reply_markup=get_admin_keyboard())
+        await query.edit_message_text("🌍 *Adding numbers...*\nUse Manual Range Refresh instead", parse_mode=ParseMode.MARKDOWN, reply_markup=get_admin_keyboard())
+    
     elif data == 'list_ranges':
-        ranges_text = "📋 *Active Ranges*\n\n"
-        for country in config.COUNTRIES:
-            ranges_text += f"• {country}\n"
+        if not active_numbers:
+            await query.edit_message_text("📭 No numbers yet! Do Manual Range Refresh first.", reply_markup=get_admin_keyboard())
+            return
+        
+        ranges_text = "📋 *Active Numbers*\n\n"
+        country_count = {}
+        for num_data in active_numbers.values():
+            country = num_data['country']
+            country_count[country] = country_count.get(country, 0) + 1
+        
+        for country, count in country_count.items():
+            ranges_text += f"• {country}: {count} numbers\n"
+        
         await query.edit_message_text(ranges_text, parse_mode=ParseMode.MARKDOWN, reply_markup=get_admin_keyboard())
+    
     elif data == 'set_cookies':
-        await query.edit_message_text("🍪 *Send Cookies*\n\nSend cookies in format: `name1=value1; name2=value2`", parse_mode=ParseMode.MARKDOWN)
+        await query.edit_message_text("🍪 *Send Cookies*\n\nSend cookies from Kiwi browser:", parse_mode=ParseMode.MARKDOWN)
         context.user_data['awaiting_cookies'] = True
+    
     elif data == 'toggle_auto':
-        await query.edit_message_text("🔘 *Auto Range Toggled*", parse_mode=ParseMode.MARKDOWN, reply_markup=get_admin_keyboard())
-    else:
-        await query.edit_message_text("⏳ Coming soon!", reply_markup=get_admin_keyboard())
+        await query.edit_message_text("🔘 Auto refresh feature coming soon!", reply_markup=get_admin_keyboard())
 
 async def handle_cookies(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if context.user_data.get('awaiting_cookies'):
         cookies_str = update.message.text
         success = panel.set_cookies(cookies_str)
         if success:
-            await update.message.reply_text("✅ Cookies saved successfully!")
+            await update.message.reply_text("✅ Cookies saved successfully!\nNow use /admin → Manual Range Refresh")
         else:
-            await update.message.reply_text("❌ Failed to save cookies. Check format.")
+            await update.message.reply_text("❌ Failed to save cookies. Try again.")
         context.user_data['awaiting_cookies'] = False
 
 async def check_otp_updates(context: ContextTypes.DEFAULT_TYPE):
-    print(f"[{datetime.now()}] Checking for OTP updates...")
-    messages = panel.get_otp_messages()
-    for msg in messages:
-        msg_id = msg.get('id')
-        if msg_id not in otp_cache:
-            otp_cache[msg_id] = msg
-            try:
-                await context.bot.send_message(
-                    chat_id=config.ADMIN_ID,
-                    text=f"🔐 *New OTP!*\n\n📱 {msg.get('number')}\n🔑 `{msg.get('otp')}`",
-                    parse_mode=ParseMode.MARKDOWN
-                )
-            except:
-                pass
-
-async def error_handler(update, context):
-    print(f"Error: {context.error}")
+    print(f"[{datetime.now()}] Checking OTP...")
 
 def main():
-    application = Application.builder().token(config.BOT_TOKEN).build()
+    app = Application.builder().token(config.BOT_TOKEN).build()
+    app.add_handler(CommandHandler("start", start))
+    app.add_handler(CommandHandler("admin", admin))
+    app.add_handler(CallbackQueryHandler(button_callback))
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_cookies))
     
-    # Add handlers
-    application.add_handler(CommandHandler("start", start))
-    application.add_handler(CommandHandler("admin", admin))
-    application.add_handler(CallbackQueryHandler(button_callback))
-    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_cookies))
-    application.add_error_handler(error_handler)
+    if app.job_queue:
+        app.job_queue.run_repeating(check_otp_updates, interval=30, first=10)
     
-    # JobQueue for OTP checking
-    if application.job_queue:
-        application.job_queue.run_repeating(check_otp_updates, interval=10, first=5)
-        print("✅ JobQueue started")
-    else:
-        print("⚠️ JobQueue not available")
-    
-    print("🤖 Bot started successfully!")
-    application.run_polling(allowed_updates=Update.ALL_TYPES)
+    print("🚀 Fast OTP Bot started!")
+    app.run_polling(allowed_updates=Update.ALL_TYPES)
 
 if __name__ == "__main__":
     main()
