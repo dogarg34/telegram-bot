@@ -83,7 +83,8 @@ def generate_unique_id(record: dict) -> str:
     time = record.get("time", "")
     unique_str = f"{phone}|{msg}|{time}"
     return hashlib.md5(unique_str.encode()).hexdigest()
-    def parse_api_response(data):
+
+def parse_api_response(data):
     """Convert any API response to a list of dicts with keys: time, country, number, service, message"""
     records = []
     if isinstance(data, list):
@@ -152,28 +153,28 @@ def format_telegram(record):
     
     service_icon = "📱"
     svc = record["service"].lower()
-   if "whatsapp" in svc:
-    service_icon = "🟢"
-elif "telegram" in svc:
-    service_icon = "🔵"
-elif "facebook" in svc:
-    service_icon = "📘"
-elif "instagram" in svc:
-    service_icon = "📸"
-elif "twitter" in svc or "x" in svc:
-    service_icon = "🐦"
-elif "gmail" in svc or "google" in svc:
-    service_icon = "📧"
-elif "youtube" in svc:
-    service_icon = "▶️"
-elif "amazon" in svc:
-    service_icon = "🛒"
-elif "netflix" in svc:
-    service_icon = "🎬"
-elif "paypal" in svc:
-    service_icon = "💰"
-elif "tiktok" in svc:
-    service_icon = "🎵"
+    if "whatsapp" in svc:
+        service_icon = "🟢"
+    elif "telegram" in svc:
+        service_icon = "🔵"
+    elif "facebook" in svc:
+        service_icon = "📘"
+    elif "instagram" in svc:
+        service_icon = "📸"
+    elif "twitter" in svc or "x" in svc:
+        service_icon = "🐦"
+    elif "gmail" in svc or "google" in svc:
+        service_icon = "📧"
+    elif "youtube" in svc:
+        service_icon = "▶️"
+    elif "amazon" in svc:
+        service_icon = "🛒"
+    elif "netflix" in svc:
+        service_icon = "🎬"
+    elif "paypal" in svc:
+        service_icon = "💰"
+    elif "tiktok" in svc:
+        service_icon = "🎵"
     
     return f"""
 <b>{flag} New {country_name} {record['service']} OTP!</b>
@@ -189,7 +190,8 @@ elif "tiktok" in svc:
 
 Powered by Blaze NXT Team
 """
-    async def send_to_telegram(text):
+
+async def send_to_telegram(text):
     keyboard = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton("📢 Channel", url="https://t.me/bksnumber"),
          InlineKeyboardButton("👨‍💻 Dev", url="https://t.me/firstoget")]
@@ -216,6 +218,5 @@ async def main():
     tasks = [asyncio.create_task(worker(url)) for url in API_URLS]
     await asyncio.gather(*tasks)
 
-if name == "main":
+if __name__ == "__main__":
     asyncio.run(main())
-    
