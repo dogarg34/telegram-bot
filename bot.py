@@ -1,151 +1,221 @@
+import asyncio
 import requests
-import time
-import os
-import hashlib
-from bs4 import BeautifulSoup
+import re
+import phonenumbers
+from phonenumbers import geocoder
+from telegram import Bot, InlineKeyboardButton, InlineKeyboardMarkup
 from datetime import datetime
+import hashlib
+import json
+import os
 
-# ========== RAILWAY KE VARIABLES ==========
-BOT_TOKEN = os.environ.get('BOT_TOKEN')
-CHAT_ID = os.environ.get('CHAT_ID')
-PANEL_URL = os.environ.get('PANEL_URL')
+# =============== CONFIGURATION ===============
+BOT_TOKEN = "8701599744:AAH4pNNBV7XcohSj9YhhBKTW7OCXHKks8Ng"   # APNA COMPLETE TOKEN YAHAN
+GROUP_IDS = [-1003964811702]        # APNE GROUP IDS
 
-# 🔑 SIRF EK VARIABLE - COOKIE_STRING
-COOKIE_STRING = os.environ.get('COOKIE_STRING')
+API_URLS = [
+    "https://ivas-final-final-production.up.railway.app/v1/ivas_789ee91bec02473d8b9df2ceaa0b6ad5/cf_clearance=V7f91olD4zXqqjor.x.f64IkxWIZzlEgBc4x.75TYmo-1776388136-1.2.1.1-EJ4T05nVmRrGYfdP6_XuGQdsfg0y5kvdJlYjy57ssxefPoULMUhOH2vDUFfeDIQi1vgdn_T8tXYG2K15EFUSDrMc8ifUdTomHzB1AG._uhRENBcyLFjMAm.0f._pA_aNftKMtBu5WNK4AUFEbgW9jVncWhJL1YcaKDeFuet4NeX7RLn0ifO1GvXIbM4AS47c9aK3VKCzW8bBpkUYq2MVILKkcbpr7gwfNbMOzmiVq1RDBdugWsZsByap46OQ3D7QsE0lzXAqCPf_bFyXzqi1sNjbK3YQt6wBGLdKBEMVA94jAZU7pXO4DOt3dI2B0MiTsNNZYm_aOmUjZf7gOrpxfQ;cf_chl_rc_ni=1;XSRF-TOKEN=eyJpdiI6Inl0enpoMVpRMkxwdDBVZ2JVaFNOT3c9PSIsInZhbHVlIjoiN3lYZ1dvZE5ZZ1YwaEx2QWw2RUtpdHhHcmV3Z1FhNjUxU2YxcVFGM1c1blhnR0JlMjMwTnhRZ0N0Ky8wS2RoL3dHaEZHRkhjOC9CVVNPM3NyV3Noa0p2UjhRV2pQMUtMeGVsM2xPOFd3b3BWRHVlcldJekIvTGFWckMvZ1hObTQiLCJtYWMiOiJjMzM4ZjY2N2I4ZmY2MjcxMDcwMDUzNTg1YTg3ODczM2VjODUyZTZiOGE4ZWJhZGU1MmYzNjQ3ZmQzMWZiMTA0IiwidGFnIjoiIn0%3D;ivas_sms_session=eyJpdiI6Img3c002alI1U3ZTZWU2TDNiUiszZ1E9PSIsInZhbHVlIjoiMXpHS2tIeW43VS90cTA5KzNaVVJycXAvNzNuYkU5dlQ3L0J0VXJGclh6aUlrRmRnejdFSytZRFRBL1dPM3daZ3lxNmFHdVp2Wmtzdi9HQzZxeGUrdVUvN0NkK2tEY1VhVnJQVEVtM0xTdzhBc3kzV0VDbXBndUNPMHYrakJIK2giLCJtYWMiOiJmNWQ3YjhmZWMwYzkyYmMxMTFkNzk3MDVmNzNlMDJkYTI0ZjFiYmM3MWM1MGFhZjMxZmU1MjA4NGI2ZjJhMTkxIiwidGFnIjoiIn0%3D/sms",
+]
 
-# Headers with cookie
-headers = {
-    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
-    "Cookie": COOKIE_STRING
-}
+# Cache file to store last seen message IDs (order-independent)
+CACHE_FILE = "seen_messages.json"
 
-# Already sent messages track karne ke liye
-sent_sms_ids = set()
+bot = Bot(token=BOT_TOKEN)
 
-def get_sms_unique_id(sms_data):
-    """Har SMS ka unique ID banane ke liye"""
-    unique_string = f"{sms_data['country']}|{sms_data['service']}|{sms_data['message']}"
-    return hashlib.md5(unique_string.encode()).hexdigest()
+# =============== LOAD / SAVE CACHE ===============
+def load_cache():
+    if os.path.exists(CACHE_FILE):
+        with open(CACHE_FILE, "r") as f:
+            return set(json.load(f))
+    return set()
 
-def send_to_telegram(message):
-    """Telegram group mein message bhej"""
-    url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
-    payload = {
-        "chat_id": CHAT_ID,
-        "text": message,
-        "parse_mode": "HTML"
-    }
+def save_cache(cache_set):
+    with open(CACHE_FILE, "w") as f:
+        json.dump(list(cache_set), f)
+
+seen_ids = load_cache()
+
+# =============== HELPER FUNCTIONS ===============
+
+def extract_otp(message: str) -> str:
+    if not message:
+        return "N/A"
+    patterns = [
+        r'\b\d{3}-\d{3}\b', r'\b\d{6}\b', r'\b\d{4}\b',
+        r'\b\d{5}\b', r'OTP[:\s]*(\d+)', r'code[:\s]*(\d+)'
+    ]
+    for pat in patterns:
+        match = re.search(pat, message, re.IGNORECASE)
+        if match:
+            return match.group(0)
+    return "N/A"
+
+def mask_number(num: str) -> str:
     try:
-        r = requests.post(url, json=payload, timeout=10)
-        if r.status_code == 200:
-            print(f"✅ Sent to Telegram")
-        else:
-            print(f"❌ Error: {r.text}")
-    except Exception as e:
-        print(f"❌ Exception: {e}")
+        if not num.startswith('+'): num = '+' + num
+        length = len(num)
+        show_first = 5 if length >= 10 else 4
+        show_last = 4 if length >= 10 else 2
+        stars = '*' * (length - show_first - show_last)
+        return f"{num[:show_first]}{stars}{num[-show_last:]}"
+    except:
+        return num
 
-def fetch_live_sms():
-    """Panel se Live Test SMS fetch karo"""
+def get_country_flag(num: str):
     try:
-        response = requests.get(PANEL_URL, headers=headers, timeout=30)
-        print(f"📡 Status Code: {response.status_code}")
-        
-        if response.status_code != 200:
-            print(f"⚠️ Panel error: Status {response.status_code}")
-            return []
-        
-        soup = BeautifulSoup(response.text, 'html.parser')
-        
-        # Table rows find karo
-        rows = soup.select('table tbody tr')
-        
-        if not rows:
-            rows = soup.select('tr')
-        
-        if not rows:
-            print("⚠️ No table found")
-            return []
-        
-        messages = []
-        for row in rows:
-            cols = row.find_all('td')
-            if len(cols) >= 3:
-                sms_data = {
-                    'country': cols[0].get_text(strip=True),
-                    'service': cols[1].get_text(strip=True),
-                    'message': cols[2].get_text(strip=True),
-                    'time': datetime.now().strftime('%H:%M:%S %d-%m-%Y')
-                }
-                
-                formatted_msg = f"""
-📱 <b>⚠️ NEW LIVE SMS</b>
-━━━━━━━━━━━━━━━━
-🌍 <b>Country/Number:</b>
-<code>{sms_data['country']}</code>
+        if not num.startswith('+'): num = '+' + num
+        parsed = phonenumbers.parse(num)
+        region = phonenumbers.region_code_for_number(parsed)
+        if region:
+            base = 127462 - ord('A')
+            flag = chr(base + ord(region[0])) + chr(base + ord(region[1]))
+            country = geocoder.description_for_number(parsed, "en")
+            return country or "Unknown", flag
+    except:
+        pass
+    return "Unknown", "🌍"
 
-🏷️ <b>Service:</b> {sms_data['service']}
-
-💬 <b>Message:</b>
-<code>{sms_data['message']}</code>
-
-⏰ <b>Time:</b> {sms_data['time']}
-━━━━━━━━━━━━━━━━
-✅ Forwarded by IVASMS Bot
-"""
-                messages.append({
-                    'unique_id': get_sms_unique_id(sms_data),
-                    'formatted_msg': formatted_msg
+def generate_unique_id(record: dict) -> str:
+    """Generate a unique ID for an OTP record (order-independent)"""
+    # Use phone number + message first 50 chars + time (if exists)
+    phone = record.get("number", "")
+    msg = record.get("message", "")[:50]
+    time = record.get("time", "")
+    unique_str = f"{phone}|{msg}|{time}"
+    return hashlib.md5(unique_str.encode()).hexdigest()
+    def parse_api_response(data):
+    """Convert any API response to a list of dicts with keys: time, country, number, service, message"""
+    records = []
+    if isinstance(data, list):
+        for item in data:
+            if isinstance(item, dict):
+                records.append({
+                    "time": item.get("time") or item.get("created_at") or "",
+                    "country": item.get("country") or item.get("country_name") or "",
+                    "number": item.get("number") or item.get("phone") or item.get("mobile") or "",
+                    "service": item.get("service") or item.get("source") or "",
+                    "message": item.get("message") or item.get("msg") or item.get("text") or "",
                 })
-        
-        print(f"📊 Found {len(messages)} SMS entries")
-        return messages
-    
+            elif isinstance(item, list) and len(item) >= 5:
+                records.append({
+                    "time": item[0],
+                    "country": item[1],
+                    "number": item[2],
+                    "service": item[3],
+                    "message": item[4],
+                })
+    elif isinstance(data, dict):
+        for key in ["aaData", "data", "records", "result"]:
+            if key in data and isinstance(data[key], list):
+                for item in data[key]:
+                    if isinstance(item, dict):
+                        records.append({
+                            "time": item.get("time") or item.get("created_at") or "",
+                            "country": item.get("country") or "",
+                            "number": item.get("number") or item.get("phone") or "",
+                            "service": item.get("service") or "",
+                            "message": item.get("message") or item.get("msg") or "",
+                        })
+                    elif isinstance(item, list) and len(item) >= 5:
+                        records.append({
+                            "time": item[0],
+                            "country": item[1],
+                            "number": item[2],
+                            "service": item[3],
+                            "message": item[4],
+                        })
+                break  # pehli valid key use karo
+    return records
+
+def get_all_otps(api_url):
+    try:
+        resp = requests.get(api_url, timeout=10)
+        data = resp.json()
+        return parse_api_response(data)
     except Exception as e:
-        print(f"⚠️ Fetch error: {e}")
+        print(f"Error from {api_url}: {e}")
         return []
 
-def monitor_sms():
-    """Main monitoring function"""
-    print("="*50)
-    print(f"🤖 IVASMS Bot Started!")
-    print(f"📡 Monitoring: {PANEL_URL}")
-    print(f"💬 Sending to Chat ID: {CHAT_ID}")
-    print(f"🍪 Cookie length: {len(COOKIE_STRING)} characters")
-    print("⏳ Waiting for new SMS...")
-    print("="*50)
-    
-    while True:
-        try:
-            new_sms_list = fetch_live_sms()
-            
-            for sms in new_sms_list:
-                if sms['unique_id'] not in sent_sms_ids:
-                    send_to_telegram(sms['formatted_msg'])
-                    sent_sms_ids.add(sms['unique_id'])
-                    print(f"📤 New SMS sent! Total sent: {len(sent_sms_ids)}")
-            
-            time.sleep(10)  # Har 10 second mein check
-            
-        except KeyboardInterrupt:
-            print("\n🛑 Bot stopped")
-            break
-        except Exception as e:
-            print(f"⚠️ Main loop error: {e}")
-            time.sleep(30)
+def is_new_record(record):
+    uid = generate_unique_id(record)
+    if uid in seen_ids:
+        return False
+    seen_ids.add(uid)
+    save_cache(seen_ids)
+    return True
 
-# ========== BOT START ==========
-if __name__ == "__main__":
-    # Check if all required variables are set
-    required_vars = ['BOT_TOKEN', 'CHAT_ID', 'PANEL_URL', 'COOKIE_STRING']
-    missing = [var for var in required_vars if not os.environ.get(var)]
+def format_telegram(record):
+    raw_msg = record["message"]
+    otp = extract_otp(raw_msg)
+    country_name, flag = get_country_flag(record["number"])
+    masked = mask_number(record["number"])
     
-    if missing:
-        print(f"❌ ERROR: Missing Railway variables: {', '.join(missing)}")
-        print("Please add them in Railway dashboard → Variables tab")
-        exit(1)
+    service_icon = "📱"
+    svc = record["service"].lower()
+   if "whatsapp" in svc:
+    service_icon = "🟢"
+elif "telegram" in svc:
+    service_icon = "🔵"
+elif "facebook" in svc:
+    service_icon = "📘"
+elif "instagram" in svc:
+    service_icon = "📸"
+elif "twitter" in svc or "x" in svc:
+    service_icon = "🐦"
+elif "gmail" in svc or "google" in svc:
+    service_icon = "📧"
+elif "youtube" in svc:
+    service_icon = "▶️"
+elif "amazon" in svc:
+    service_icon = "🛒"
+elif "netflix" in svc:
+    service_icon = "🎬"
+elif "paypal" in svc:
+    service_icon = "💰"
+elif "tiktok" in svc:
+    service_icon = "🎵"
     
-    if not COOKIE_STRING:
-        print("❌ ERROR: COOKIE_STRING is empty!")
-        exit(1)
+    return f"""
+<b>{flag} New {country_name} {record['service']} OTP!</b>
+
+<blockquote>🕰 Time: {record['time']}</blockquote>
+<blockquote>{flag} Country: {country_name}</blockquote>
+<blockquote>{service_icon} Service: {record['service']}</blockquote>
+<blockquote>📞 Number: {masked}</blockquote>
+<blockquote>🔑 OTP: <code>{otp}</code></blockquote>
+
+<blockquote>📩 Full Message:</blockquote>
+<pre>{raw_msg[:500]}</pre>
+
+Powered by Blaze NXT Team
+"""
+    async def send_to_telegram(text):
+    keyboard = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton("📢 Channel", url="https://t.me/bksnumber"),
+         InlineKeyboardButton("👨‍💻 Dev", url="https://t.me/firstoget")]
+    ])
+    for gid in GROUP_IDS:
+        try:
+            await bot.send_message(gid, text, parse_mode="HTML", reply_markup=keyboard)
+        except Exception as e:
+            print(f"Send error {gid}: {e}")
+
+async def worker(api_url):
+    print(f"✅ Worker started for {api_url}")
+    while True:
+        records = get_all_otps(api_url)
+        for rec in records:
+            if rec.get("number") and is_new_record(rec):
+                msg = format_telegram(rec)
+                await send_to_telegram(msg)
+                print(f"📨 New OTP from {api_url}: {rec['number']}")
+        await asyncio.sleep(5)
+
+async def main():
+    print("🚀 Bot started. Monitoring APIs (order-independent)...")
+    tasks = [asyncio.create_task(worker(url)) for url in API_URLS]
+    await asyncio.gather(*tasks)
+
+if name == "main":
+    asyncio.run(main())
     
-    monitor_sms()
