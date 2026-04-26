@@ -1,2 +1,4 @@
-requests
-beautifulsoup4
+python-telegram-bot==20.7
+requests==2.31.0
+phonenumbers==8.13.29
+asyncio==3.4.3
