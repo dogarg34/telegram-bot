@@ -327,32 +327,91 @@ app = Flask(__name__)
 def health():
     return Response("OK", status=200)
 
-# ========= START ALL THREADS =========
-if __name__ == "__main__":
-    threading.Thread(target=handle_updates, daemon=True).start()
-    threading.Thread(target=sender_worker, daemon=True).start()
-    threading.Thread(target=main_loop, daemon=True).start()
+# ========= /START + COMMAND HANDLER =========
+last_update_id = 0
 
-    app.run(host="0.0.0.0", port=5000)
+def handle_updates():
+    global last_update_id
+    tg_url = f"https://api.telegram.org/bot{BOT_TOKEN}/getUpdates"
+    print("[INFO] Command handler activated")
 
-if text.startswith("/addnum"):
-    if user_id not in ADMINS:
-        continue
+    while True:
+        try:
+            params = {"offset": last_update_id + 1, "timeout": 10}
+            r = requests.get(tg_url, params=params, timeout=20)
 
-    nums = text.replace("/addnum", "").strip().split()
-    clean = [re.sub(r"\D", "", n) for n in nums if len(n) >= 8]
+            if r.status_code == 200:
+                data = r.json()
 
-    save_numbers(clean)
+                for update in data.get("result", []):
+                    last_update_id = update["update_id"]
 
-    send_to_telegram(f"✅ Added {len(clean)} numbers")
+                    msg = update.get("message", {})
+                    text = msg.get("text", "")
+                    chat_id = msg.get("chat", {}).get("id")
+                    user_id = msg.get("from", {}).get("id")
 
-elif text.startswith("/numbers"):
-    if user_id not in ADMINS:
-        continue
+                    # ===== FILE UPLOAD =====
+                    if "document" in msg:
+                        if user_id not in ADMINS:
+                            continue
 
-    nums = load_numbers()
-    if not nums:
-        send_to_telegram("📭 No numbers saved")
+                        file_id = msg["document"]["file_id"]
+
+                        r = requests.get(
+                            f"https://api.telegram.org/bot{BOT_TOKEN}/getFile",
+                            params={"file_id": file_id}
+                        )
+                        file_path = r.json()["result"]["file_path"]
+
+                        file_url = f"https://api.telegram.org/file/bot{BOT_TOKEN}/{file_path}"
+                        file_data = requests.get(file_url).text
+
+                        nums = file_data.splitlines()
+                        clean = [re.sub(r"\D", "", n) for n in nums if len(n) >= 8]
+
+                        save_numbers(clean)
+
+                        send_to_telegram(f"📂 File uploaded\n✅ {len(clean)} numbers added")
+                        continue
+
+                    # ===== COMMANDS =====
+                    if text.startswith("/start") and chat_id:
+                        reply_text = "🤖 <b>Bot is Active</b>"
+                        send_to_telegram(reply_text)
+
+                    elif text.startswith("/addnum"):
+                        if user_id not in ADMINS:
+                            continue
+
+                        nums = text.replace("/addnum", "").strip().split()
+                        clean = [re.sub(r"\D", "", n) for n in nums if len(n) >= 8]
+
+                        save_numbers(clean)
+                        send_to_telegram(f"✅ Added {len(clean)} numbers")
+
+                    elif text.startswith("/numbers"):
+                        if user_id not in ADMINS:
+                            continue
+
+                        nums = load_numbers()
+                        if not nums:
+                            send_to_telegram("📭 No numbers saved")
+                        else:
+                            show = "\n".join(nums[:50])
+                            send_to_telegram(f"📱 <b>Saved Numbers:</b>\n<code>{show}</code>")
+
+                    elif text.startswith("/clearnum"):
+                        if user_id not in ADMINS:
+                            continue
+
+                        open(NUMBERS_FILE, "w").close()
+                        send_to_telegram("🗑 Numbers cleared")
+
+        except Exception as e:
+            print(f"[ERROR] Update polling: {e}")
+
+        time.sleep(0.5)
     else:
         show = "\n".join(nums[:50])
         send_to_telegram(f"📱 <b>Saved Numbers:</b>\n<code>{show}</code>")
