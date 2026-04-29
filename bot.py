@@ -375,85 +375,73 @@ def handle_updates():
                         send_to_telegram(f"📂 File uploaded\n✅ {len(clean)} numbers added")
                         continue
 
-                    # ===== COMMANDS ====
-
-                    def handle_updates():
-    global last_update_id
-    tg_url = f"https://api.telegram.org/bot{BOT_TOKEN}/getUpdates"
-    print("[INFO] Command handler activated")
-
-    while True:
-        try:
-            params = {"offset": last_update_id + 1, "timeout": 10}
-            r = requests.get(tg_url, params=params, timeout=20)
-
-            if r.status_code == 200:
-                data = r.json()
-
-                for update in data.get("result", []):
-                    last_update_id = update["update_id"]
-
-                    msg = update.get("message", {})
-                    text = msg.get("text", "")
-                    chat_id = msg.get("chat", {}).get("id")
                     user_id = msg.get("from", {}).get("id")
 
-                    # ===== FILE UPLOAD =====
-                    if "document" in msg:
-                        if user_id not in ADMINS:
-                            continue
+# ===== ADMIN COMMANDS =====
 
-                        file_id = msg["document"]["file_id"]
+if text.startswith("/addnum"):
+    if user_id not in ADMINS:
+        continue
 
-                        r = requests.get(
-                            f"https://api.telegram.org/bot{BOT_TOKEN}/getFile",
-                            params={"file_id": file_id}
-                        )
-                        file_path = r.json()["result"]["file_path"]
+    nums = text.replace("/addnum", "").strip().split()
+    clean = [re.sub(r"\D", "", n) for n in nums if len(n) >= 8]
 
-                        file_url = f"https://api.telegram.org/file/bot{BOT_TOKEN}/{file_path}"
-                        file_data = requests.get(file_url).text
+    save_numbers(clean)
 
-                        nums = file_data.splitlines()
-                        clean = [re.sub(r"\D", "", n) for n in nums if len(n) >= 8]
+    requests.post(
+        f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage",
+        data={"chat_id": chat_id, "text": f"✅ Added {len(clean)} numbers"}
+    )
 
-                        save_numbers(clean)
-                        send_to_telegram(f"📂 File uploaded\n✅ {len(clean)} numbers added")
-                        continue
+elif text.startswith("/numbers"):
+    if user_id not in ADMINS:
+        continue
 
-                    # ===== COMMANDS =====
-                    if text.startswith("/start") and chat_id:
-                        send_to_telegram("🤖 <b>Bot is Active</b>")
+    nums = load_numbers()
+    if not nums:
+        text_send = "📭 No numbers saved"
+    else:
+        show = "\n".join(nums[:50])
+        text_send = f"📱 Saved Numbers:\n{show}"
 
-                    elif text.startswith("/addnum"):
-                        if user_id not in ADMINS:
-                            continue
+    requests.post(
+        f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage",
+        data={"chat_id": chat_id, "text": text_send}
+    )
 
-                        nums = text.replace("/addnum", "").strip().split()
-                        clean = [re.sub(r"\D", "", n) for n in nums if len(n) >= 8]
+elif text.startswith("/clearnum"):
+    if user_id not in ADMINS:
+        continue
 
-                        save_numbers(clean)
-                        send_to_telegram(f"✅ Added {len(clean)} numbers")
+    open(NUMBERS_FILE, "w").close()
 
-                    elif text.startswith("/numbers"):
-                        if user_id not in ADMINS:
-                            continue
+    requests.post(
+        f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage",
+        data={"chat_id": chat_id, "text": "🗑 Numbers cleared"}
+    )
 
-                        nums = load_numbers()
-                        if not nums:
-                            send_to_telegram("📭 No numbers saved")
-                        else:
-                            show = "\n".join(nums[:50])
-                            send_to_telegram(f"📱 <b>Saved Numbers:</b>\n<code>{show}</code>")
+# ===== FILE UPLOAD =====
+if "document" in msg:
+    if user_id not in ADMINS:
+        continue
 
-                    elif text.startswith("/clearnum"):
-                        if user_id not in ADMINS:
-                            continue
+    file_id = msg["document"]["file_id"]
 
-                        open(NUMBERS_FILE, "w").close()
-                        send_to_telegram("🗑 Numbers cleared")
+    r = requests.get(
+        f"https://api.telegram.org/bot{BOT_TOKEN}/getFile",
+        params={"file_id": file_id}
+    )
+    file_path = r.json()["result"]["file_path"]
 
-        except Exception as e:
-            print(f"[ERROR] Update polling: {e}")
+    file_url = f"https://api.telegram.org/file/bot{BOT_TOKEN}/{file_path}"
+    file_data = requests.get(file_url).text
 
-        time.sleep(0.5)
+    nums = file_data.splitlines()
+    clean = [re.sub(r"\D", "", n) for n in nums if len(n) >= 8]
+
+    save_numbers(clean)
+
+    requests.post(
+        f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage",
+        data={"chat_id": chat_id, "text": f"📂 {len(clean)} numbers added"}
+    )
